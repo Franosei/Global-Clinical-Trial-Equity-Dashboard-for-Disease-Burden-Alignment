@@ -1,0 +1,30 @@
+# config/sources.yaml
+
+# Study years (you can widen later)
+years:
+  start: 2000
+  end: 2024
+
+# API call settings
+retries:
+  total: 5
+  backoff_factor: 0.5   # exponential backoff: 0.5s, 1s, 2s, ...
+
+# Data sources
+who_gho:
+  base_url: "https://ghoapi.azureedge.net/api/"
+  indicators:
+    - DALY_100000 # DALYs per 100k pop (age-standardised)
+    - DALY_NUMBER # DALY counts (if available)
+
+ctgov:
+  base_url: "https://clinicaltrials.gov/api/v2/"
+  site_fields: ["locations", "overallStatus", "phase", "sponsors"]
+
+gbd_ihme:
+  base_url: "http://ghdx.healthdata.org/gbd-results-tool"
+  notes: "IHME data often comes as bulk CSV download; may require manual seed or scripted fetch."
+
+globocan:
+  base_url: "https://gco.iarc.fr/today/"
+  notes: "Cancer incidence/mortality by country; CSV export available."
