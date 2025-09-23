@@ -1,98 +1,67 @@
-# py/ctgov.py
 """
-ClinicalTrials.gov v2 → country-year-disease site counts (no sponsor classification)
+ClinicalTrials.gov v2 → country-year-disease site counts (single parquet output)
 
-- Queries per disease (from DISEASE_PATTERNS in py/global_health_sources.py)
+- Per-disease queries using DISEASE_PATTERNS (from py/global_health_sources.py)
 - Uses v2 endpoint: https://clinicaltrials.gov/api/v2/studies
-- Paging via nextPageToken
-- Country→ISO3 via pycountry ONLY (no manual aliases)
-- Keeps only ISO3 codes from your provided ALLOWED_ISO3 universe
-- De-dupes per (nct_id, country_iso3, year, cause_code)
+- Search via query.cond, but we query PER TOKEN (no OR chains) and dedupe afterwards
+- Country→ISO3 via pycountry (strict ISO-3166 countries only)
+- Trials that match multiple diseases are split across those diseases
+- De-dup per (nct_id, country_iso3, year, cause_code)
 
-Outputs:
+Output (single file):
   data/clean/ctgov_sites.parquet
-  data/clean/country_iso3_lookup.parquet
-  data/clean/iso3_universe.parquet
 
-Columns:
+Schema:
   country_iso3, year, cause_code, cause_name, phase, trial_sites
+
+Run:
+  python -m py.ctgov     OR     python py/ctgov.py
 """
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, List, Optional, Iterable
-import json
+from typing import Dict, List, Optional, Iterable, Set
 import re
 import unicodedata
 import yaml
+import sys
 
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter, Retry
 import pycountry
 
-# Reuse disease dictionary + normaliser from WHO module
+# IMPORTANT: use absolute import as requested
 from global_health_sources import DISEASE_PATTERNS, norm_text
 
-# ------------------------ Paths & Config ------------------------
+# Paths & Config ------------------------
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CFG_PATH = REPO_ROOT / "config" / "sources.yaml"
 DATA_DIR = REPO_ROOT / "data"
-RAW_DIR = DATA_DIR / "raw"
 CLEAN_DIR = DATA_DIR / "clean"
 OUT_PARQUET = CLEAN_DIR / "ctgov_sites.parquet"
-OUT_COUNTRY_AUDIT = CLEAN_DIR / "country_iso3_lookup.parquet"
-OUT_UNIVERSE = CLEAN_DIR / "iso3_universe.parquet"
 
 def load_cfg() -> dict:
     with open(CFG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 CFG = load_cfg()
-YEARS = list(range(CFG["years"]["start"], CFG["years"]["end"] + 1))
+YEARS = list(range(int(CFG["years"]["start"]), int(CFG["years"]["end"]) + 1))
 
 # v2 base endpoint
 BASE_CT_V2 = "https://clinicaltrials.gov/api/v2/"
 
 RETRY_TOTAL = int(CFG.get("retries", {}).get("total", 5))
 RETRY_BACKOFF = float(CFG.get("retries", {}).get("backoff_factor", 0.5))
+DEFAULT_PAGE_SIZE = int(CFG.get("ctgov", {}).get("page_size", 200))
 
-# ------------------------ Allowed ISO3 Universe (your list) ------------------------
+# Year picking rule (explicit & auditable)
+DATE_RULE = str(CFG.get("ctgov", {}).get("date_rule", "start")).lower()  # start | first_posted | primary_completion
+if DATE_RULE not in {"start", "first_posted", "primary_completion"}:
+    DATE_RULE = "start"
 
-ALLOWED_ISO3 = {
-    'AFG','AFR','AGO','ALB','AMR','AND','ARE','ARG','ARM','ATG','AUS','AUT','AZE','BDI','BEL','BEN','BFA',
-    'BGD','BGR','BHR','BHS','BIH','BLR','BLZ','BOL','BRA','BRB','BRN','BTN','BWA','CAF','CAN','CHE','CHL',
-    'CHN','CIV','CMR','COD','COG','COK','COL','COM','CPV','CRI','CUB','CYP','CZE','DEU','DJI','DMA','DNK',
-    'DOM','DZA','ECU','EGY','EMR','ERI','ESP','EST','ETH','EUR','FIN','FJI','FRA','FSM','GAB','GBR','GEO',
-    'GHA','GIN','GLO','GMB','GNB','GNQ','GRC','GRD','GTM','GUY','HND','HRV','HTI','HUN','IDN','IND','IRL',
-    'IRN','IRQ','ISL','ISR','ITA','JAM','JOR','JPN','KAZ','KEN','KGZ','KHM','KIR','KNA','KOR','KWT','LAO',
-    'LBN','LBR','LBY','LCA','LKA','LSO','LTU','LUX','LVA','MAR','MCO','MDA','MDG','MDV','ME1','MEX','MHL',
-    'MKD','MLI','MLT','MMR','MNE','MNG','MOZ','MRT','MUS','MWI','MYS','NAM','NER','NGA','NIC','NIU','NLD',
-    'NOR','NPL','NRU','NZL','OMN','PAK','PAN','PER','PHL','PLW','PNG','POL','PRI','PRK','PRT','PRY','QAT',
-    'ROU','RUS','RWA','SAU','SDN','SEA','SEN','SGP','SLB','SLE','SLV','SMR','SOM','SRB','SSD','STP','SUR',
-    'SVK','SVN','SWE','SWZ','SYC','SYR','TCD','TGO','THA','TJK','TKM','TLS','TON','TTO','TUN','TUR','TUV',
-    'TZA','UGA','UKR','URY','USA','UZB','VCT','VEN','VNM','VUT','WHO','WPR','WSM','YEM','ZAF','ZMB','ZWE'
-}
-
-def _build_universe_df() -> pd.DataFrame:
-    """Mark which of the ALLOWED_ISO3 are true ISO-3166 countries (others are regions/tags)."""
-    rows = []
-    for code in sorted(ALLOWED_ISO3):
-        name = None
-        is_country = True
-        try:
-            c = next((x for x in pycountry.countries if getattr(x, "alpha_3", None) == code), None)
-            if c:
-                name = c.name
-            else:
-                is_country = False
-        except Exception:
-            is_country = False
-        rows.append({"iso3": code, "is_country": is_country, "name": name})
-    return pd.DataFrame(rows)
-
-# ------------------------ HTTP ------------------------
+# HTTP ------------------------
 
 def session_with_retries(total: int = RETRY_TOTAL, backoff: float = RETRY_BACKOFF) -> requests.Session:
     s = requests.Session()
@@ -115,41 +84,46 @@ def http_get_json(url: str, params: dict) -> dict:
     r.raise_for_status()
     return r.json()
 
-# ------------------------ v2 paging ------------------------
+# v2 paging ------------------------
 
-# We request only the fields we need to minimise payload.
-V2_FIELDS = ",".join([
-    "protocolSection.identificationModule.nctId",
-    "protocolSection.conditionsModule.conditions",
-    "protocolSection.contactsLocationsModule.locations.country",
-    "protocolSection.designModule.phases",
-    "protocolSection.statusModule.startDateStruct.date",
-    "protocolSection.statusModule.studyFirstPostDateStruct.date",
-])
-
-def ctgov_v2_iter_all(expr: str, page_size: int = 1000) -> Iterable[dict]:
+def ctgov_v2_iter_token(token_query: str, page_size: int = DEFAULT_PAGE_SIZE) -> Iterable[dict]:
     """
-    Yields pages (dicts) of v2 studies results for the boolean expression `expr`.
+    Yield pages of studies for a single token query (query.cond = token).
+    We do **not** pass 'fields' to avoid 400s from strict gateways.
+    We also back off pageSize on 400 automatically.
     """
     token = ""
+    size = max(50, int(page_size))
     while True:
         params = {
-            "query.term": expr,
-            "pageSize": str(page_size),
+            "query.cond": token_query,  # simple single-token condition search
+            "pageSize": str(size),
             "format": "json",
-            "fields": V2_FIELDS,
         }
         if token:
             params["pageToken"] = token
-        page = http_get_json(BASE_CT_V2 + "studies", params)
+        try:
+            page = http_get_json(BASE_CT_V2 + "studies", params)
+        except requests.HTTPError as e:
+            status = getattr(e, "response", None).status_code if getattr(e, "response", None) else None
+            if status == 400 and size > 100:
+                print(f"[WARN] 400 for '{token_query}'; retry with smaller pageSize (was {size} → 100)")
+                size = 100
+                continue
+            msg = e.response.text if getattr(e, "response", None) else str(e)
+            raise RuntimeError(f"CT.gov v2 error (status={status}) for params={params} :: {msg}") from e
+
         yield page
         token = page.get("nextPageToken") or ""
         if not token:
             break
 
-# ------------------------ Helpers ------------------------
+# Helpers ------------------------
 
 def parse_year_maybe(date_str: Optional[str]) -> Optional[int]:
+    """
+    Accepts 'YYYY', 'YYYY-MM', or full date strings and extracts the year.
+    """
     if not date_str:
         return None
     m = re.search(r"(\d{4})", str(date_str))
@@ -160,34 +134,71 @@ def parse_year_maybe(date_str: Optional[str]) -> Optional[int]:
     except Exception:
         return None
 
-def standardize_phase_v2(phases: List[str]) -> str:
+def pick_year(stat: dict, rule: str = DATE_RULE) -> Optional[int]:
+    choices = {
+        "start": (stat.get("startDateStruct") or {}).get("date"),
+        "first_posted": (stat.get("studyFirstPostDateStruct") or {}).get("date"),
+        "primary_completion": (stat.get("primaryCompletionDateStruct") or {}).get("date"),
+    }
+    order = {
+        "start": ["start", "primary_completion", "first_posted"],
+        "first_posted": ["first_posted", "start", "primary_completion"],
+        "primary_completion": ["primary_completion", "start", "first_posted"],
+    }[rule]
+    for key in order:
+        y = parse_year_maybe(choices.get(key))
+        if y is not None:
+            return y
+    return None
+
+def standardize_phase_v2(phases: List[str] | None) -> str:
     """
-    v2 phases come like ["PHASE1","PHASE2"] etc. Return canonical labels:
-    I, II, III, IV, I/II, II/III, III/IV, NA, with EARLY_PHASE1 → I.
+    v2 phases look like ["PHASE1","PHASE2"] etc.
+    Return canonical labels: I, II, III, IV, I/II, II/III, III/IV, NA (EARLY_PHASE1 → I).
     """
-    ph = set((phases or []))
-    # combined (check in order)
-    if {"PHASE1", "PHASE2"} <= ph:
+    phset = set(phases or [])
+    if {"PHASE1", "PHASE2"} <= phset:
         return "I/II"
-    if {"PHASE2", "PHASE3"} <= ph:
+    if {"PHASE2", "PHASE3"} <= phset:
         return "II/III"
-    if {"PHASE3", "PHASE4"} <= ph:
+    if {"PHASE3", "PHASE4"} <= phset:
         return "III/IV"
-    # singles / fallbacks
-    if "PHASE4" in ph:
+    if "PHASE4" in phset:
         return "IV"
-    if "PHASE3" in ph:
+    if "PHASE3" in phset:
         return "III"
-    if "PHASE2" in ph:
+    if "PHASE2" in phset:
         return "II"
-    if "PHASE1" in ph or "EARLY_PHASE1" in ph:
+    if "PHASE1" in phset or "EARLY_PHASE1" in phset:
         return "I"
     return "NA"
 
-def disease_expr(keywords: List[str], cause_name: str) -> str:
-    toks = [k for k in (keywords + [cause_name]) if k]
-    parts = [f'"{t.strip()}"' if " " in t else t.strip() for t in toks]
-    return "(" + " OR ".join(sorted(set(parts))) + ")"
+def extract_condition_texts(study: dict) -> List[str]:
+    """
+    Collect condition texts from:
+      - protocolSection.conditionsModule.conditions
+      - protocolSection.conditionsModule.conditionsBrowseLeafList[].leaf
+      - protocolSection.conditionsModule.conditionsMeshList[].term
+      - derivedSection.conditionBrowseModule.meshes[].term (fallback)
+    """
+    texts: List[str] = []
+    ps = study.get("protocolSection", {}) or {}
+    condm = ps.get("conditionsModule", {}) or {}
+    # base list
+    texts.extend(condm.get("conditions") or [])
+    # leaves
+    leaves = condm.get("conditionsBrowseLeafList") or []
+    texts.extend([x.get("leaf") for x in leaves if isinstance(x, dict) and x.get("leaf")])
+    # mesh list
+    meshes = condm.get("conditionsMeshList") or []
+    texts.extend([x.get("term") for x in meshes if isinstance(x, dict) and x.get("term")])
+    # derived fallback
+    der = study.get("derivedSection", {}) or {}
+    cb = der.get("conditionBrowseModule", {}) or {}
+    d_mesh = cb.get("meshes") or []
+    texts.extend([x.get("term") for x in d_mesh if isinstance(x, dict) and x.get("term")])
+    # clean
+    return [t for t in texts if t]
 
 def match_condition_to_cause(conditions: List[str], cause_keywords: List[str]) -> bool:
     if not conditions:
@@ -200,13 +211,11 @@ def _ascii(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
     return "".join(ch for ch in s if not unicodedata.combining(ch))
 
-def country_to_iso3(label: Optional[str], *, audit: Dict[str, Optional[str]] | None = None) -> Optional[str]:
+def country_to_iso3(label: Optional[str]) -> Optional[str]:
     """
-    Map a v2 location country label to ISO3 via pycountry only; keep only ALLOWED_ISO3.
+    Map a v2 location country label to ISO3 via pycountry only; keep strict ISO3 (exclude regions/globals).
     """
     if not label or not str(label).strip():
-        if audit is not None:
-            audit[label or ""] = None
         return None
     name = str(label).strip()
     code = None
@@ -226,112 +235,120 @@ def country_to_iso3(label: Optional[str], *, audit: Dict[str, Optional[str]] | N
                     break
             except Exception:
                 continue
-    if code and code in ALLOWED_ISO3:
-        if audit is not None:
-            audit[name] = code
+    # accept only strict ISO3 (exclude WHO regions, globals)
+    if code and re.fullmatch(r"[A-Z]{3}", code):
         return code
-    if audit is not None:
-        audit[name] = None
     return None
 
-# ------------------------ Main Extraction ------------------------
+def unique_tokens_for_cause(keywords: List[str], cause_name: str, max_tokens: int = 8) -> List[str]:
+    """
+    Build a small set of unique, useful tokens to query individually with query.cond.
+    We include the cause_name and the raw keywords, deduped case-insensitively.
+    """
+    toks = [t.strip() for t in (keywords + [cause_name]) if t and t.strip()]
+    # lightweight dedupe preserving order
+    seen: Set[str] = set()
+    uniq: List[str] = []
+    for t in toks:
+        k = t.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(t)
+        if len(uniq) >= max_tokens:
+            break
+    return uniq
+
+# Main Extraction ------------------------
 
 def pull_ctgov_sites() -> pd.DataFrame:
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
     CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 
-    # persist the universe for transparency
-    _build_universe_df().to_parquet(OUT_UNIVERSE, index=False)
-
     site_rows: List[dict] = []
-    audit_map: Dict[str, Optional[str]] = {}
 
     for cause_code, (cause_name, keywords) in DISEASE_PATTERNS.items():
-        expr = disease_expr(keywords, cause_name)
-        print(f"[CT.gov v2] {cause_code} :: {expr}")
+        tokens = unique_tokens_for_cause(keywords, cause_name, max_tokens=10)
+        print(f"[CT.gov v2] {cause_code} :: tokens -> {', '.join(tokens)}")
 
-        all_studies: List[dict] = []
-        for page in ctgov_v2_iter_all(expr, page_size=1000):
-            studies = page.get("studies", []) or []
-            all_studies.extend(studies)
+        # query one token at a time to avoid 400s from long OR strings
+        for tkn in tokens:
+            for page in ctgov_v2_iter_token(tkn, page_size=DEFAULT_PAGE_SIZE):
+                for s in page.get("studies", []) or []:
+                    ps = s.get("protocolSection", {}) or {}
+                    ident = ps.get("identificationModule", {}) or {}
+                    locm = ps.get("contactsLocationsModule", {}) or {}
+                    desm = ps.get("designModule", {}) or {}
+                    stat = ps.get("statusModule", {}) or {}
 
-        # Save raw provenance (trimmed to the subset of fields we requested)
-        with open(RAW_DIR / f"ctgov_v2_{cause_code}.json", "w", encoding="utf-8") as f:
-            json.dump(all_studies, f, ensure_ascii=False)
+                    nct = ident.get("nctId")
+                    if not nct:
+                        continue
 
-        # Transform to site-level rows
-        for s in all_studies:
-            ps = s.get("protocolSection", {}) or {}
-            ident = ps.get("identificationModule", {}) or {}
-            condm = ps.get("conditionsModule", {}) or {}
-            locm = ps.get("contactsLocationsModule", {}) or {}
-            desm = ps.get("designModule", {}) or {}
-            stat = ps.get("statusModule", {}) or {}
+                    # Match disease using conditions + browse leaves + MeSH (+ derived fallback)
+                    conditions = extract_condition_texts(s)
+                    if not match_condition_to_cause(conditions, keywords + [cause_name]):
+                        continue
 
-            nct = ident.get("nctId")
-            if not nct:
-                continue
+                    # Pick a year per config rule
+                    year = pick_year(stat, DATE_RULE)
+                    if year is None or year not in YEARS:
+                        continue
 
-            conditions = condm.get("conditions") or []
-            if not match_condition_to_cause(conditions, keywords + [cause_name]):
-                continue
+                    phase_std = standardize_phase_v2(desm.get("phases"))
 
-            # Pick a year: prefer startDateStruct, fallback to studyFirstPostDateStruct
-            y = (stat.get("startDateStruct", {}) or {}).get("date")
-            if not y:
-                y = (stat.get("studyFirstPostDateStruct", {}) or {}).get("date")
-            year = parse_year_maybe(y)
-            if year is None or year not in YEARS:
-                continue
-
-            phase_std = standardize_phase_v2(desm.get("phases") or [])
-
-            locations = (locm.get("locations") or [])
-            for loc in locations:
-                cname = (loc or {}).get("country")
-                iso3 = country_to_iso3(cname, audit=audit_map)
-                if not iso3:
-                    continue
-                site_rows.append({
-                    "nct_id": nct,
-                    "country_iso3": iso3,
-                    "year": int(year),
-                    "cause_code": cause_code,
-                    "cause_name": cause_name,
-                    "phase": phase_std,
-                })
+                    locations = (locm.get("locations") or [])
+                    for loc in locations:
+                        cname = (loc or {}).get("country")
+                        iso3 = country_to_iso3(cname)
+                        if not iso3:
+                            continue
+                        site_rows.append({
+                            "nct_id": nct,
+                            "country_iso3": iso3,
+                            "year": int(year),
+                            "cause_code": cause_code,
+                            "cause_name": cause_name,
+                            "phase": phase_std,
+                        })
 
     if not site_rows:
         print("[WARN] No CT.gov v2 rows collected.")
-        pd.DataFrame({"ctgov_label": list(audit_map.keys()),
-                      "iso3": list(audit_map.values())}).to_parquet(OUT_COUNTRY_AUDIT, index=False)
-        return pd.DataFrame()
+        # still write an empty parquet with the right schema
+        empty = pd.DataFrame(columns=["country_iso3","year","cause_code","cause_name","phase","trial_sites"])
+        empty.to_parquet(OUT_PARQUET, index=False)
+        return empty
 
-    # De-duplicate unique trial per country/year/cause
-    df = pd.DataFrame(site_rows).drop_duplicates(subset=["nct_id", "country_iso3", "year", "cause_code"])
+    # 1) De-duplicate unique trial per country/year/cause
+    events = (pd.DataFrame(site_rows)
+                .drop_duplicates(subset=["nct_id", "country_iso3", "year", "cause_code"])
+                .reset_index(drop=True))
 
-    # Aggregate to counts
-    agg = (df.groupby(["country_iso3", "year", "cause_code", "cause_name", "phase"], as_index=False)
-             .agg(trial_sites=("nct_id", "nunique")))
+    # 2) Aggregate to counts (one row per country-year-disease-phase)
+    agg = (events.groupby(["country_iso3", "year", "cause_code", "cause_name", "phase"], as_index=False)
+                 .agg(trial_sites=("nct_id", "nunique")))
 
-    # Persist outputs
+    # 3) Write single parquet output with required columns & types
+    cols = ["country_iso3","year","cause_code","cause_name","phase","trial_sites"]
+    agg = agg[cols]
+    agg["country_iso3"] = agg["country_iso3"].astype(str)
+    agg["year"] = agg["year"].astype(int)
+    agg["cause_code"] = agg["cause_code"].astype(str)
+    agg["cause_name"] = agg["cause_name"].astype(str)
+    agg["phase"] = agg["phase"].astype(str)
+    agg["trial_sites"] = agg["trial_sites"].astype(int)
+
     agg.to_parquet(OUT_PARQUET, index=False)
 
-    audit_df = (pd.DataFrame({"ctgov_label": list(audit_map.keys()),
-                              "iso3": list(audit_map.values())})
-                  .sort_values(["iso3", "ctgov_label"], na_position="last")
-                  .reset_index(drop=True))
-    audit_df.to_parquet(OUT_COUNTRY_AUDIT, index=False)
-
     print(f"[OK] Wrote {OUT_PARQUET} (rows={len(agg)})")
-    print(f"[OK] Wrote {OUT_COUNTRY_AUDIT} (labels={audit_df.shape[0]})")
-    print(f"[OK] Wrote {OUT_UNIVERSE} (codes={len(ALLOWED_ISO3)})")
-
     with pd.option_context("display.max_columns", None, "display.width", 1000):
         print(agg.head(12).to_string(index=False))
     return agg
 
-# ------------------------ Entry ------------------------
+# Entry ------------------------
 
 if __name__ == "__main__":
-    pull_ctgov_sites()
+    try:
+        pull_ctgov_sites()
+    except Exception as e:
+        print("\n[ERROR] ctgov.py failed:")
+        print(str(e))
+        sys.exit(1)

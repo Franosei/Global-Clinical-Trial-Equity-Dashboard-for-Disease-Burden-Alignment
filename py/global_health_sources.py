@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 import pandas as pd
+import numpy as np
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
@@ -37,14 +38,17 @@ def load_cfg() -> dict:
 CFG = load_cfg()
 
 # Years from config (inclusive range)
-YEARS = list(range(CFG["years"]["start"], CFG["years"]["end"] + 1))
+YEARS = list(range(int(CFG["years"]["start"]), int(CFG["years"]["end"]) + 1))
 
 # WHO base url from config
-BASE_GHO = CFG["who_gho"]["base_url"].rstrip("/") + "/"
+BASE_GHO = str(CFG["who_gho"]["base_url"]).rstrip("/") + "/"
 
 # Retry/backoff from config (with sensible defaults)
 RETRY_TOTAL = int(CFG.get("retries", {}).get("total", 5))
 RETRY_BACKOFF = float(CFG.get("retries", {}).get("backoff_factor", 0.5))
+
+# Optional small raw dumps for provenance (kept minimal)
+SAVE_RAW = bool(CFG.get("who_gho", {}).get("save_raw", False))
 
 BOTH_SEXES_CODES = {"BTSX", "BTSX_AGEALL", "ALLSEX", "BTSX_AGESTANDARDIZED"}
 
@@ -147,8 +151,11 @@ def pull_indicator_catalogue() -> pd.DataFrame:
     cat = pd.DataFrame(rows)
     if cat.empty:
         return cat
-    cat["IndicatorName_n"] = cat["IndicatorName"].astype(str).apply(norm_text)
-    cat["IndicatorCode_u"] = cat["IndicatorCode"].astype(str).str.upper()
+    # Defensive typing
+    cat["IndicatorName"] = cat["IndicatorName"].astype(str)
+    cat["IndicatorCode"] = cat["IndicatorCode"].astype(str)
+    cat["IndicatorName_n"] = cat["IndicatorName"].apply(norm_text)
+    cat["IndicatorCode_u"] = cat["IndicatorCode"].str.upper()
     return cat[["IndicatorCode","IndicatorName","IndicatorName_n","IndicatorCode_u"]]
 
 def match_indicators(cat: pd.DataFrame) -> pd.DataFrame:
@@ -185,7 +192,7 @@ def match_indicators(cat: pd.DataFrame) -> pd.DataFrame:
         print("  (none)")
     else:
         dbg = (map_df.groupby(["cause_code","cause_name"])["indicator_code"]
-                     .apply(lambda x: ", ".join(sorted(set(x)))).reset_index())
+                     .apply(lambda x: ", ".join(sorted(set(map(str, x))))).reset_index())
         for _, r in dbg.iterrows():
             print(f"  {r['cause_code']:6s}  {r['cause_name']}: {r['indicator_code']}")
 
@@ -208,19 +215,15 @@ def fetch_indicator_all(code: str) -> pd.DataFrame:
             break
         rows.extend(vals)
         skip += len(vals)
-    # persist raw for provenance (optional, small)
-    if rows:
+    df = pd.DataFrame(rows)
+    if SAVE_RAW and not df.empty:
         RAW_DIR.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(rows).to_json(RAW_DIR / f"who_{code}.json", orient="records", lines=False)
-    return pd.DataFrame(rows)
+        df.to_json(RAW_DIR / f"who_{code}.json", orient="records", lines=False)
+    return df
 
 def parse_year(row: pd.Series) -> Optional[int]:
-    if "TimeDim" in row and pd.notna(row["TimeDim"]):
-        try:
-            return int(row["TimeDim"])
-        except Exception:
-            pass
-    for fld in ("TimeDimensionBegin","TimeDimensionValue"):
+    # Typical fields: "TimeDim", sometimes "TimeDimensionBegin" or "TimeDimensionValue"
+    for fld in ("TimeDim", "TimeDimensionBegin", "TimeDimensionValue"):
         if fld in row and pd.notna(row[fld]):
             s = str(row[fld])
             try:
@@ -230,8 +233,16 @@ def parse_year(row: pd.Series) -> Optional[int]:
     return None
 
 def prefer_total_stratum(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Keep one row per (SpatialDim, year, IndicatorCode), preferring:
+      1) Both sexes + no extra dims
+      2) All-null Dim* (implicit totals)
+      3) Otherwise the least stratified row
+    """
     if df.empty:
-        return df
+        return df.copy()
+
+    # Year
     if "TimeDim" in df.columns:
         df["year"] = pd.to_numeric(df["TimeDim"], errors="coerce")
     else:
@@ -246,7 +257,8 @@ def prefer_total_stratum(df: pd.DataFrame) -> pd.DataFrame:
         if "Dim1Type" in row and str(row["Dim1Type"]).upper() == "SEX":
             d1 = str(row.get("Dim1","")).upper()
             if d1 in BOTH_SEXES_CODES:
-                for c in ["Dim2","Dim3"]:
+                # must not have other dims populated
+                for c in ["Dim2","Dim3","Dim4","Dim5"]:
                     if c in row and pd.notna(row[c]):
                         return False
                 return True
@@ -254,47 +266,64 @@ def prefer_total_stratum(df: pd.DataFrame) -> pd.DataFrame:
 
     df["_both"] = df.apply(is_both, axis=1)
     df["_nn"] = df[dim_cols].notna().sum(axis=1) if dim_cols else 0
+    # Lower priority value wins in sort; so set "best" to 0
     df["_prio"] = 2 + df["_nn"]
-    df.loc[df["_both"], "_prio"] = 1
-    df.loc[df["_allnull"], "_prio"] = 0
+    df.loc[df["_allnull"], "_prio"] = 1
+    df.loc[df["_both"], "_prio"] = 0
 
     df = df.sort_values(["_prio"])
     keep_cols = [c for c in df.columns if c not in ["_allnull","_both","_nn","_prio"]]
-    return (df.groupby(["SpatialDim","year","IndicatorCode"], as_index=False)
-              .first()[keep_cols])
+    collapsed = (df.groupby(["SpatialDim","year","IndicatorCode"], as_index=False)
+                   .first()[keep_cols])
+    return collapsed
 
 def tidy_who(df: pd.DataFrame, cause_code: str, cause_name: str) -> pd.DataFrame:
     if df.empty:
-        return df
+        return df.copy()
+
+    # Numeric coercion
     for c in ("NumericValue","Low","High"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     out = df.rename(columns={
-        "SpatialDim":"country_iso3",
-        "NumericValue":"value",
-        "Low":"value_low",
-        "High":"value_high",
+        "SpatialDim": "country_iso3",
+        "NumericValue": "value",
+        "Low": "value_low",
+        "High": "value_high",
     })
+
+    # Filter to configured years and non-null essentials
     out = out.dropna(subset=["country_iso3","year","value"])
-    out["country_iso3"] = out["country_iso3"].astype(str).str.upper().str[:3]
+    out["year"] = out["year"].astype(int)
     out = out[out["year"].isin(YEARS)]
 
+    # Country: force ISO3 upper & drop non-ISO3 codes (e.g., regions)
+    out["country_iso3"] = out["country_iso3"].astype(str).str.upper().str[:3]
+    out = out[out["country_iso3"].str.fullmatch(r"[A-Z]{3}")]
+
+    # Metric classification from indicator name
     name_series = out.get("IndicatorName", pd.Series(index=out.index, dtype="object")).astype(str).apply(norm_text)
     metric = pd.Series("DALYs (count)", index=out.index, dtype="object")
-    metric.loc[name_series.str.contains("per 100", na=False) | name_series.str.contains("age standard", na=False)] = "DALYs per 100k population"
+    is_rate = name_series.str.contains("per 100", na=False) | name_series.str.contains("age standard", na=False)
+    metric.loc[is_rate] = "DALYs per 100k population"
 
     out["cause_code"] = cause_code
     out["cause_name"] = cause_name
     out["metric"] = metric
 
-    return out[["country_iso3","year","cause_code","cause_name","value","value_low","value_high","metric"]]
+    cols = ["country_iso3","year","cause_code","cause_name","value","value_low","value_high","metric"]
+    return out[cols]
 
 # ------------------------ Main pipeline ------------------------
 
 def run_pipeline() -> pd.DataFrame:
+    # Ensure output folder exists
     CLEAN_DIR.mkdir(parents=True, exist_ok=True)
+    if SAVE_RAW:
+        RAW_DIR.mkdir(parents=True, exist_ok=True)
 
+    # 1) Pull & match DALY indicators
     cat = pull_indicator_catalogue()
     if cat.empty:
         print("[ERROR] WHO indicator catalogue is empty.")
@@ -305,9 +334,10 @@ def run_pipeline() -> pd.DataFrame:
         print("[ERROR] No indicators matched disease patterns.")
         return pd.DataFrame()
 
+    # 2) Fetch all indicators and tidy
     frames: List[pd.DataFrame] = []
     for _, row in mapping.iterrows():
-        code = row["indicator_code"]
+        code = str(row["indicator_code"])
         try:
             raw = fetch_indicator_all(code)
         except requests.HTTPError as e:
@@ -318,7 +348,7 @@ def run_pipeline() -> pd.DataFrame:
         reduced = prefer_total_stratum(raw)
         if reduced.empty:
             continue
-        tidy = tidy_who(reduced, row["cause_code"], row["cause_name"])
+        tidy = tidy_who(reduced, str(row["cause_code"]), str(row["cause_name"]))
         if not tidy.empty:
             frames.append(tidy)
 
@@ -328,26 +358,30 @@ def run_pipeline() -> pd.DataFrame:
 
     df = pd.concat(frames, ignore_index=True)
 
-    # If multiple indicators map to the same cause, keep both metrics if different,
-    # else prefer rate over count for uniqueness
-    df["_rank"] = (df["metric"] != "DALYs per 100k population").astype(int)
+    # 3) If multiple indicators map to the same cause, keep both metrics if different,
+    #    else prefer *counts* (more universal for ER denominator)
+    df["_rank"] = (df["metric"] == "DALYs per 100k population").astype(int)  # counts=0, rate=1
     df = (df.sort_values(["country_iso3","year","cause_code","_rank"])
             .drop_duplicates(subset=["country_iso3","year","cause_code","metric"], keep="first")
             .drop(columns=["_rank"]))
 
-    # Coverage log
+    # 4) Final sanity: drop impossible values and years outside config (defensive)
+    df = df[df["value"].notna() & np.isfinite(df["value"])]
+    df = df[df["year"].isin(YEARS)]
+
+    # 5) Coverage log
     have = sorted(df["cause_code"].unique())
     missing = sorted(set(DISEASE_PATTERNS.keys()) - set(have))
     print("\n[COVERAGE] causes captured:", ", ".join(have) if have else "(none)")
     if missing:
         print("[WARN] missing causes:", ", ".join(missing))
 
-    # Write Parquet (preferred for pipeline)
+    # 6) Write exactly one Parquet
     df.to_parquet(OUT_PARQUET, index=False)
     print(f"\n[OK] Wrote {OUT_PARQUET} (rows={len(df)})")
 
-    # Small preview
-    with pd.option_context("display.max_columns", None, "display.width", 1000):
+    # Small preview (safe)
+    with pd.option_context("display.max_columns", None, "display.width", 1200):
         print(df.head(12).to_string(index=False))
     return df
 
