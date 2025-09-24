@@ -27,9 +27,8 @@ Method notes:
   • WHO burden is country×cause (no year). We use it as a stable severity weight.
   • CT trial sites are aggregated into fixed intervals:
         2000–2005, 2006–2010, 2011–2015, 2016–2020, 2021–2025
-  • For each (interval, cause): trial_share varies with CT allocation; burden_share derives from WHO.
-    Equity Ratio (ER) = trial_share / burden_share per country.
-  • Trial density per 1k DALYs uses WHO burden as denominator.
+  • Universe is ALL (country×cause) that appear in WHO or CT.gov, crossed with all intervals.
+    Missing trials/burden remain NaN in their columns; calculations treat missing trials/burden as 0 only for math.
 """
 
 from __future__ import annotations
@@ -81,17 +80,20 @@ def theil_T(trial_share: np.ndarray, burden_share: np.ndarray) -> float:
     """Theil T of allocation (trial_share vs burden_share) for a given (interval, cause)."""
     p = np.asarray(trial_share, dtype=float)
     b = np.asarray(burden_share, dtype=float)
-    m = np.isfinite(p) & np.isfinite(b) & (p >= 0) & (b > 0)
+    m = np.isfinite(p) & np.isfinite(b) & (p >= 0) & (b >= 0)
     p, b = p[m], b[m]
     if p.size == 0:
         return np.nan
     ps, bs = p.sum(), b.sum()
     if ps <= 0 or bs <= 0:
         return np.nan
-    p, b = p / ps, b / bs
+    # Normalize explicitly to probability simplex
+    p = p / ps
+    b = b / bs
     with np.errstate(divide="ignore", invalid="ignore"):
-        r = p / b
-        term = np.where(p > 0, p * np.log(r), 0.0)
+        r = np.where(b > 0, p / b, np.nan)  # r undefined where b==0
+        term = np.where((p > 0) & np.isfinite(r), p * np.log(r), 0.0)
+    # If all b==0, earlier guard returned NaN
     return float(np.nansum(term))
 
 # Fixed interval mapping: 2000–2005, 2006–2010, 2011–2015, 2016–2020, 2021–2025
@@ -123,30 +125,28 @@ def run_indices() -> pd.DataFrame:
     who = pd.read_parquet(IN_WHO)
     ct  = pd.read_parquet(IN_CT)
 
-    # ---- WHO: country×cause only (no year). Use as stable severity weight.
+    # ---- WHO: country×cause (no year). Keep original burden column; compute standardized.
     for c in ["country_iso3", "cause_code", "cause_name"]:
         who[c] = who[c].astype(str)
     who["burden_dalys"] = pd.to_numeric(who["value"], errors="coerce")
-    # Metric kind/label (from WHO pipeline this is per-100k, summed across years)
     who["metric_kind"]  = "rate_per_100k"
     who["metric_label"] = who.get("metric", "DALYs per 100k population")
-
     who = who[["country_iso3","cause_code","cause_name","burden_dalys","metric_kind","metric_label"]]
 
-    # ---- CT.gov: aggregate into fixed intervals; sum across phases
+    # ---- CT.gov: clean, map to intervals, aggregate across phases
     for c in ["country_iso3", "cause_code", "cause_name", "phase"]:
         ct[c] = ct[c].astype(str)
     ct["year"]        = pd.to_numeric(ct["year"], errors="coerce").astype("Int64")
-    ct["trial_sites"] = pd.to_numeric(ct["trial_sites"], errors="coerce").fillna(0).astype(int)
+    ct["trial_sites"] = pd.to_numeric(ct["trial_sites"], errors="coerce")
     ct = ct.dropna(subset=["year"]).copy()
     ct["year"] = ct["year"].astype(int)
 
-    # Map to intervals and drop years outside defined bins
     ints = ct["year"].apply(assign_interval)
     ct["interval_tuple"] = ints
     ct = ct[ct["interval_tuple"].notna()].copy()
-    if ct.empty:
-        _warn("All CT.gov rows fall outside the defined intervals.")
+
+    if ct.empty and who.empty:
+        _warn("Both WHO and CT.gov inputs are empty after cleaning.")
         out = pd.DataFrame(columns=[
             "country_iso3","interval_start","interval_end","interval_label",
             "cause_code","cause_name",
@@ -160,18 +160,30 @@ def run_indices() -> pd.DataFrame:
         _info(f"Wrote {OUT_GOLD} (rows=0)")
         return out
 
-    ct["interval_start"] = ct["interval_tuple"].apply(lambda x: x[0])
-    ct["interval_end"]   = ct["interval_tuple"].apply(lambda x: x[1])
-    ct["interval_label"] = ct["interval_tuple"].apply(lambda x: x[2])
+    if not ct.empty:
+        ct["interval_start"] = ct["interval_tuple"].apply(lambda x: x[0])
+        ct["interval_end"]   = ct["interval_tuple"].apply(lambda x: x[1])
+        ct["interval_label"] = ct["interval_tuple"].apply(lambda x: x[2])
 
-    # Total trial sites per country×interval×cause (phases aggregated)
-    ct_int = (ct.groupby(
-                ["country_iso3", "interval_start", "interval_end", "interval_label",
-                 "cause_code", "cause_name"], as_index=False)
-                .agg(trial_sites=("trial_sites", "sum")))
+        ct_int = (ct.groupby(
+                    ["country_iso3", "interval_start", "interval_end", "interval_label",
+                     "cause_code", "cause_name"], as_index=False)
+                  .agg(trial_sites=("trial_sites", "sum")))
+    else:
+        # Create an empty ct_int with expected columns to allow merging
+        ct_int = pd.DataFrame(columns=[
+            "country_iso3","interval_start","interval_end","interval_label",
+            "cause_code","cause_name","trial_sites"
+        ])
 
-    if ct_int.empty:
-        _warn("CT.gov interval aggregation produced no rows.")
+    # ---- Build the FULL universe: (countries ∪) × (causes ∪) × intervals
+    countries = pd.Series(pd.unique(pd.concat([who["country_iso3"], ct_int["country_iso3"]], ignore_index=True))).dropna()
+    causes    = pd.DataFrame(pd.unique(pd.concat([who[["cause_code","cause_name"]].apply(tuple, axis=1),
+                                                  ct_int[["cause_code","cause_name"]].apply(tuple, axis=1)],
+                                                 ignore_index=True)),
+                             columns=["pair"]).dropna()
+    if causes.empty:
+        _warn("No causes found in WHO or CT.gov; output will be empty.")
         out = pd.DataFrame(columns=[
             "country_iso3","interval_start","interval_end","interval_label",
             "cause_code","cause_name",
@@ -185,33 +197,77 @@ def run_indices() -> pd.DataFrame:
         _info(f"Wrote {OUT_GOLD} (rows=0)")
         return out
 
-    # ---- Merge WHO burden onto CT intervals (no year key needed)
-    df = ct_int.merge(who, on=["country_iso3","cause_code","cause_name"], how="left")
+    causes[["cause_code","cause_name"]] = pd.DataFrame(causes["pair"].tolist(), index=causes.index)
+    causes = causes.drop(columns=["pair"])
 
-    # If burden is missing for some country×cause, drop (ER cannot be computed)
-    df = df.dropna(subset=["burden_dalys"]).copy()
+    intervals_df = pd.DataFrame(
+        [(s, e, f"{s}–{e}") for (s, e) in _INTERVALS],
+        columns=["interval_start","interval_end","interval_label"]
+    )
 
-    # ---- Compute shares & ER per (interval, cause)
-    totals = (df.groupby(["interval_start","interval_end","interval_label","cause_code"], as_index=False)
-                .agg(trial_sites_total=("trial_sites","sum"),
-                     burden_total=("burden_dalys","sum")))
+    universe = (
+        pd.DataFrame({"country_iso3": countries})
+        .assign(key=1)
+        .merge(causes.assign(key=1), on="key", how="outer")
+        .merge(intervals_df.assign(key=1), on="key", how="outer")
+        .drop(columns=["key"])
+        .dropna(subset=["country_iso3","cause_code","cause_name"])
+        .reset_index(drop=True)
+    )
+
+    # ---- Merge WHO & CT aggregates onto the universe (keep originals as-is)
+    df = (universe
+          .merge(who, on=["country_iso3","cause_code","cause_name"], how="left")
+          .merge(ct_int, on=["country_iso3","cause_code","cause_name","interval_start","interval_end","interval_label"], how="left")
+          .copy())
+
+    # IMPORTANT: Do NOT overwrite original columns with zeros.
+    # For math, use filled helper columns (NaN -> 0 for totals/shares only).
+    df["_trial_sites_filled"]   = df["trial_sites"].fillna(0.0)
+    df["_burden_dalys_filled"]  = df["burden_dalys"].fillna(0.0)
+
+    # ---- Totals per interval × cause (using the filled helpers)
+    totals = (
+        df.groupby(["interval_start","interval_end","interval_label","cause_code"], as_index=False)
+          .agg(trial_sites_total=("_trial_sites_filled","sum"),
+               burden_total=("_burden_dalys_filled","sum"))
+    )
+
     df = df.merge(totals, on=["interval_start","interval_end","interval_label","cause_code"], how="left")
 
-    df["trial_share"]  = df["trial_sites"]  / df["trial_sites_total"].replace({0: np.nan})
-    df["burden_share"] = df["burden_dalys"] / df["burden_total"].replace({0: np.nan})
-    df["equity_ratio"] = df["trial_share"] / df["burden_share"]
+    # ---- Shares (well-defined even when some countries have NaN originals)
+    # If total == 0, share is 0 by convention; otherwise standard fraction.
+    # Keep shares as float in [0,1], and allow NaN only when denominator is NaN (shouldn't happen due to fill=0).
+    ts_den = df["trial_sites_total"].replace({0: np.nan})
+    df["trial_share"] = np.where(ts_den.isna(), 0.0, df["_trial_sites_filled"] / ts_den)
 
-    # ---- Trial density per 1k DALYs (burden_dalys is per-100k; density is sites per 1k DALYs)
-    df["trial_density_per_k_dalys"] = df["trial_sites"] / (df["burden_dalys"] / 1_000.0).replace({0: np.nan})
+    bd_den = df["burden_total"].replace({0: np.nan})
+    df["burden_share"] = np.where(bd_den.isna(), 0.0, df["_burden_dalys_filled"] / bd_den)
 
-    # ---- Inequality metrics (weighted by burden_share) per interval×cause
+    # ---- Equity Ratio: ER = trial_share / burden_share; undefined where burden_share==0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["equity_ratio"] = np.where(df["burden_share"] > 0, df["trial_share"] / df["burden_share"], np.nan)
+
+    # ---- Trial density per 1k DALYs (use original burden; undefined if burden_dalys <= 0 or NaN)
+    denom_density = (df["burden_dalys"] / 1_000.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["trial_density_per_k_dalys"] = np.where(denom_density > 0, df["_trial_sites_filled"] / denom_density, np.nan)
+
+    # ---- Inequality metrics per interval×cause
     metrics = []
     for (s, e, lab, cc), sub in df.groupby(["interval_start","interval_end","interval_label","cause_code"], dropna=False):
-        p  = sub["trial_share"].to_numpy(float)
-        b  = sub["burden_share"].to_numpy(float)
+        p = sub["trial_share"].to_numpy(float)   # already normalized per interval×cause when summed
+        b = sub["burden_share"].to_numpy(float)
         er = sub["equity_ratio"].to_numpy(float)
-        g  = weighted_gini(er, b)
-        T  = theil_T(p, b)
+
+        # If both totals zero, metrics undefined
+        ps, bs = np.nansum(p), np.nansum(b)
+        if ps <= 0 and bs <= 0:
+            g, T = np.nan, np.nan
+        else:
+            g = weighted_gini(er, b)
+            T = theil_T(p, b)
+
         metrics.append({
             "interval_start": s, "interval_end": e, "interval_label": lab, "cause_code": cc,
             "gini_er_weighted": g, "theil_T": T
@@ -219,7 +275,7 @@ def run_indices() -> pd.DataFrame:
     mdf = pd.DataFrame(metrics)
     df  = df.merge(mdf, on=["interval_start","interval_end","interval_label","cause_code"], how="left")
 
-    # ---- Final select & write
+    # ---- Final select (original columns preserved; helpers dropped)
     out_cols = [
         "country_iso3","interval_start","interval_end","interval_label",
         "cause_code","cause_name",
@@ -230,8 +286,8 @@ def run_indices() -> pd.DataFrame:
         "metric_kind","metric_label"
     ]
     out = (df[out_cols]
-            .sort_values(["interval_start","cause_code","country_iso3"])
-            .reset_index(drop=True))
+           .sort_values(["interval_start","cause_code","country_iso3"])
+           .reset_index(drop=True))
 
     GOLD_DIR.mkdir(parents=True, exist_ok=True)
     out.to_parquet(OUT_GOLD, index=False)
