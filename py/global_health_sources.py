@@ -2,14 +2,17 @@
 WHO GHO DALY pull for 13 fixed diseases with robust discovery/matching.
 
 Output (Parquet): data/clean/who_daly_selected.parquet
-Columns:
-  country_iso3, year, cause_code, cause_name, value, value_low, value_high, metric
+
+Columns (final aggregated across years):
+  country_iso3, cause_code, cause_name, value, value_low, value_high, metric
+
+Where:
+  • value = SUM over years of DALYs per 100k (cumulative per-100k across configured YEARS)
 Run:
   python -m py.global_health_sources
 """
 
 from __future__ import annotations
-import os
 import re
 import unicodedata
 from typing import Dict, List, Tuple, Optional
@@ -23,12 +26,11 @@ from requests.adapters import HTTPAdapter, Retry
 
 # ------------------------ Paths & Config ------------------------
 
-# repo_root = clinical-trial-equity/
-REPO_ROOT = Path(__file__).resolve().parents[1]
-CFG_PATH = REPO_ROOT / "config" / "sources.yaml"
-DATA_DIR = REPO_ROOT / "data"
-RAW_DIR = DATA_DIR / "raw"
-CLEAN_DIR = DATA_DIR / "clean"
+REPO_ROOT   = Path(__file__).resolve().parents[1]
+CFG_PATH    = REPO_ROOT / "config" / "sources.yaml"
+DATA_DIR    = REPO_ROOT / "data"
+RAW_DIR     = DATA_DIR / "raw"
+CLEAN_DIR   = DATA_DIR / "clean"
 OUT_PARQUET = CLEAN_DIR / "who_daly_selected.parquet"
 
 def load_cfg() -> dict:
@@ -37,20 +39,13 @@ def load_cfg() -> dict:
 
 CFG = load_cfg()
 
-# Years from config (inclusive range)
-YEARS = list(range(int(CFG["years"]["start"]), int(CFG["years"]["end"]) + 1))
-
-# WHO base url from config
-BASE_GHO = str(CFG["who_gho"]["base_url"]).rstrip("/") + "/"
-
-# Retry/backoff from config (with sensible defaults)
-RETRY_TOTAL = int(CFG.get("retries", {}).get("total", 5))
+YEARS         = list(range(int(CFG["years"]["start"]), int(CFG["years"]["end"]) + 1))
+BASE_GHO      = str(CFG["who_gho"]["base_url"]).rstrip("/") + "/"
+RETRY_TOTAL   = int(CFG.get("retries", {}).get("total", 5))
 RETRY_BACKOFF = float(CFG.get("retries", {}).get("backoff_factor", 0.5))
+SAVE_RAW      = bool(CFG.get("who_gho", {}).get("save_raw", False))
 
-# Optional small raw dumps for provenance (kept minimal)
-SAVE_RAW = bool(CFG.get("who_gho", {}).get("save_raw", False))
-
-BOTH_SEXES_CODES = {"BTSX", "BTSX_AGEALL", "ALLSEX", "BTSX_AGESTANDARDIZED"}
+BOTH_SEXES_CODES = {"BTSX", "ALLSEX", "BTSX_AGEALL", "BTSX_AGESTANDARDIZED"}
 
 # ------------------------ Disease dictionary ------------------------
 
@@ -70,7 +65,6 @@ DISEASE_PATTERNS: Dict[str, Tuple[str, List[str]]] = {
     "RTI":      ("Road traffic injuries",                  ["road traffic", "transport injury", "motor vehicle", "rti"]),
 }
 
-# indicator-code hints (expanded). These help catch terse SA_ codes.
 CODE_HINTS = {
     "IHD":     ["IHD", "SA_0000001425"],
     "STROKE":  ["STROKE", "CBVD", "SA_0000001689"],
@@ -111,7 +105,7 @@ def gho_get_json(path: str, params: Optional[Dict[str, str]] = None) -> dict:
     r.raise_for_status()
     return r.json()
 
-# ------------------------ Normalisation helpers ------------------------
+# ------------------------ Helpers ------------------------
 
 def norm_text(s: str) -> str:
     if s is None:
@@ -137,7 +131,78 @@ def contains_any(series: pd.Series, needles: List[str], normalised: bool = False
         mask = mask | s.str.contains(re.escape(n), na=False)
     return mask
 
-# ------------------------ WHO DALY catalogue & matching ------------------------
+def parse_year(row: pd.Series) -> Optional[int]:
+    for fld in ("TimeDim", "TimeDimensionBegin", "TimeDimensionValue"):
+        if fld in row and pd.notna(row[fld]):
+            s = str(row[fld])
+            try:
+                return int(s[:4])
+            except Exception:
+                continue
+    return None
+
+# ---- relaxed totals logic ----
+TOTAL_CODES = {
+    "SEX": {"BTSX", "ALLSEX", "BTSX_AGEALL", "BTSX_AGESTANDARDIZED"},
+    "AGEGROUP": {"AGEALL", "AGESTANDARDIZED"},
+    "INCOMELEVEL": {"ALL"},
+    "URBANRURAL": {"ALL"},
+    "AREAS": {"ALL"},
+    "RESIDENCE": {"ALL"},
+    "EDUCATION": {"ALL"},
+}
+
+def is_total_like_row(row) -> bool:
+    for i in range(1, 6):
+        t = str(row.get(f"Dim{i}Type", "") or "").upper()
+        v = str(row.get(f"Dim{i}", "") or "").upper()
+        if (t, v) == ("", ""):
+            continue
+        if t in TOTAL_CODES and v in TOTAL_CODES[t]:
+            continue
+        if v in {"ALL", "TOTAL"}:
+            continue
+        return False
+    return True
+
+def prefer_total_stratum(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Keep one row per (SpatialDim, year, IndicatorCode), preferring:
+      - "total-like" rows (both sexes, AGEALL/AGESTANDARDIZED, other dims ALL/TOTAL)
+      - then both-sex over not, then AGEALL over not, then fewer non-null dims
+    """
+    if df.empty:
+        return df.copy()
+
+    # Year
+    if "TimeDim" in df.columns:
+        df["year"] = pd.to_numeric(df["TimeDim"], errors="coerce")
+    else:
+        df["year"] = df.apply(parse_year, axis=1)
+    df = df.dropna(subset=["year"])
+    df["year"] = df["year"].astype(int)
+
+    dim_cols = [c for c in df.columns if c.startswith("Dim")]
+
+    df["_total_like"] = df.apply(is_total_like_row, axis=1)
+    df["_both_sex"] = (df.get("Dim1Type", "").astype(str).str.upper() == "SEX") & \
+                      (df.get("Dim1", "").astype(str).str.upper().isin(BOTH_SEXES_CODES))
+    df["_age_all"] = (df.get("Dim2Type", "").astype(str).str.upper() == "AGEGROUP") & \
+                     (df.get("Dim2", "").astype(str).str.upper().isin(TOTAL_CODES["AGEGROUP"]))
+    df["_nn"] = df[dim_cols].notna().sum(axis=1) if dim_cols else 0
+
+    # Lower is better; then put True for both_sex/age_all first via ascending flags
+    df["_prio"] = np.where(df["_total_like"], 0, 10)
+    df = df.sort_values(
+        by=["_prio", "_both_sex", "_age_all", "_nn"],
+        ascending=[True, False, False, True],
+    )
+
+    keep_cols = [c for c in df.columns if c not in ["_total_like","_both_sex","_age_all","_nn","_prio"]]
+    return (df.groupby(["SpatialDim","year","IndicatorCode"], as_index=False)
+              .first()[keep_cols])
+
+# ------------------------ Catalogue & matching ------------------------
 
 def pull_indicator_catalogue() -> pd.DataFrame:
     rows, skip = [], 0
@@ -151,7 +216,6 @@ def pull_indicator_catalogue() -> pd.DataFrame:
     cat = pd.DataFrame(rows)
     if cat.empty:
         return cat
-    # Defensive typing
     cat["IndicatorName"] = cat["IndicatorName"].astype(str)
     cat["IndicatorCode"] = cat["IndicatorCode"].astype(str)
     cat["IndicatorName_n"] = cat["IndicatorName"].apply(norm_text)
@@ -160,48 +224,49 @@ def pull_indicator_catalogue() -> pd.DataFrame:
 
 def match_indicators(cat: pd.DataFrame) -> pd.DataFrame:
     """
-    Return mapping rows: indicator_code, indicator_name, cause_code, cause_name.
-
-    Rules:
-      • accept indicators whose NAME mentions 'daly' OR whose CODE starts with 'SA_' (GHE cause lists often do)
-      • AND name/code matches any disease keyword OR code-hint list for that cause
+    Map indicators to our causes and tag component ∈ {DALY, YLL, YLD}.
+    Accept indicator names mentioning DALY/YLL/YLD or codes starting with SA_.
     """
     if cat.empty:
-        return pd.DataFrame(columns=["indicator_code","indicator_name","cause_code","cause_name"])
+        return pd.DataFrame(columns=["indicator_code","indicator_name","cause_code","cause_name","component"])
 
-    is_dalyish = contains_any(cat["IndicatorName_n"], ["daly"]) | cat["IndicatorCode_u"].str.startswith("SA_")
+    is_component = (
+        contains_any(cat["IndicatorName_n"], ["daly", "yll", "yld"]) |
+        cat["IndicatorCode_u"].str.startswith("SA_")
+    )
+
+    def get_component(row) -> str:
+        text = (row["IndicatorName"] + " " + row["IndicatorCode_u"]).upper()
+        if re.search(r"\bYLL\b", text): return "YLL"
+        if re.search(r"\bYLD\b", text): return "YLD"
+        if "DALY" in text: return "DALY"
+        if row["IndicatorCode_u"].startswith("SA_"): return "DALY"
+        return "DALY"
 
     mappings = []
     for cause_code, (cause_name, keywords) in DISEASE_PATTERNS.items():
         name_hit = contains_any(cat["IndicatorName_n"], keywords)
         code_hit = contains_any(cat["IndicatorCode_u"], CODE_HINTS.get(cause_code, [cause_code]), normalised=True)
-        match = cat[is_dalyish & (name_hit | code_hit)].drop_duplicates(subset=["IndicatorCode"])
-        for _, row in match.iterrows():
+        match = cat[is_component & (name_hit | code_hit)].drop_duplicates(subset=["IndicatorCode"])
+        for _, r in match.iterrows():
             mappings.append({
-                "indicator_code": row["IndicatorCode"],
-                "indicator_name": row["IndicatorName"],
+                "indicator_code": r["IndicatorCode"],
+                "indicator_name": r["IndicatorName"],
                 "cause_code": cause_code,
                 "cause_name": cause_name,
+                "component": get_component(r),
             })
 
     map_df = pd.DataFrame(mappings).drop_duplicates(subset=["indicator_code","cause_code"]).reset_index(drop=True)
 
-    # Debug table: what matched per cause
     print("\n[MATCH DEBUG] Indicators matched per disease:")
     if map_df.empty:
         print("  (none)")
     else:
-        dbg = (map_df.groupby(["cause_code","cause_name"])["indicator_code"]
+        dbg = (map_df.groupby(["cause_code","cause_name","component"])["indicator_code"]
                      .apply(lambda x: ", ".join(sorted(set(map(str, x))))).reset_index())
         for _, r in dbg.iterrows():
-            print(f"  {r['cause_code']:6s}  {r['cause_name']}: {r['indicator_code']}")
-
-    # Missing causes warning
-    want = set(DISEASE_PATTERNS.keys())
-    got = set(map_df["cause_code"].unique())
-    miss = sorted(want - got)
-    if miss:
-        print("\n[WARN] No DALY indicators found for causes:", ", ".join(miss))
+            print(f"  {r['cause_code']:6s}  {r['cause_name']:<45s} [{r['component']}]: {r['indicator_code']}")
     return map_df
 
 # ------------------------ Fetch & tidy ------------------------
@@ -221,67 +286,11 @@ def fetch_indicator_all(code: str) -> pd.DataFrame:
         df.to_json(RAW_DIR / f"who_{code}.json", orient="records", lines=False)
     return df
 
-def parse_year(row: pd.Series) -> Optional[int]:
-    # Typical fields: "TimeDim", sometimes "TimeDimensionBegin" or "TimeDimensionValue"
-    for fld in ("TimeDim", "TimeDimensionBegin", "TimeDimensionValue"):
-        if fld in row and pd.notna(row[fld]):
-            s = str(row[fld])
-            try:
-                return int(s[:4])
-            except Exception:
-                continue
-    return None
-
-def prefer_total_stratum(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Keep one row per (SpatialDim, year, IndicatorCode), preferring:
-      1) Both sexes + no extra dims
-      2) All-null Dim* (implicit totals)
-      3) Otherwise the least stratified row
-    """
+def tidy_who(df: pd.DataFrame, cause_code: str, cause_name: str, component: str) -> pd.DataFrame:
     if df.empty:
         return df.copy()
 
-    # Year
-    if "TimeDim" in df.columns:
-        df["year"] = pd.to_numeric(df["TimeDim"], errors="coerce")
-    else:
-        df["year"] = df.apply(parse_year, axis=1)
-    df = df.dropna(subset=["year"])
-    df["year"] = df["year"].astype(int)
-
-    dim_cols = [c for c in df.columns if c.startswith("Dim")]
-    df["_allnull"] = df[dim_cols].isna().all(axis=1) if dim_cols else True
-
-    def is_both(row):
-        if "Dim1Type" in row and str(row["Dim1Type"]).upper() == "SEX":
-            d1 = str(row.get("Dim1","")).upper()
-            if d1 in BOTH_SEXES_CODES:
-                # must not have other dims populated
-                for c in ["Dim2","Dim3","Dim4","Dim5"]:
-                    if c in row and pd.notna(row[c]):
-                        return False
-                return True
-        return False
-
-    df["_both"] = df.apply(is_both, axis=1)
-    df["_nn"] = df[dim_cols].notna().sum(axis=1) if dim_cols else 0
-    # Lower priority value wins in sort; so set "best" to 0
-    df["_prio"] = 2 + df["_nn"]
-    df.loc[df["_allnull"], "_prio"] = 1
-    df.loc[df["_both"], "_prio"] = 0
-
-    df = df.sort_values(["_prio"])
-    keep_cols = [c for c in df.columns if c not in ["_allnull","_both","_nn","_prio"]]
-    collapsed = (df.groupby(["SpatialDim","year","IndicatorCode"], as_index=False)
-                   .first()[keep_cols])
-    return collapsed
-
-def tidy_who(df: pd.DataFrame, cause_code: str, cause_name: str) -> pd.DataFrame:
-    if df.empty:
-        return df.copy()
-
-    # Numeric coercion
+    # Coerce numerics
     for c in ("NumericValue","Low","High"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -293,51 +302,146 @@ def tidy_who(df: pd.DataFrame, cause_code: str, cause_name: str) -> pd.DataFrame
         "High": "value_high",
     })
 
-    # Filter to configured years and non-null essentials
+    # Year
     out = out.dropna(subset=["country_iso3","year","value"])
     out["year"] = out["year"].astype(int)
     out = out[out["year"].isin(YEARS)]
 
-    # Country: force ISO3 upper & drop non-ISO3 codes (e.g., regions)
+    # ISO3
     out["country_iso3"] = out["country_iso3"].astype(str).str.upper().str[:3]
     out = out[out["country_iso3"].str.fullmatch(r"[A-Z]{3}")]
 
-    # Metric classification from indicator name
-    name_series = out.get("IndicatorName", pd.Series(index=out.index, dtype="object")).astype(str).apply(norm_text)
-    metric = pd.Series("DALYs (count)", index=out.index, dtype="object")
-    is_rate = name_series.str.contains("per 100", na=False) | name_series.str.contains("age standard", na=False)
-    metric.loc[is_rate] = "DALYs per 100k population"
+    # -------- Robust unit detection --------
+    # Use multiple hints the GHO API often provides
+    name_n = out.get("IndicatorName", pd.Series(index=out.index, dtype="object")).astype(str).str.lower()
+    units  = out.get("Units",         pd.Series(index=out.index, dtype="object")).astype(str).str.lower()
+    vtype  = out.get("ValueType",     pd.Series(index=out.index, dtype="object")).astype(str).str.lower()
+
+    # Rate if: ValueType says 'rate' OR Units mentions per-100k OR IndicatorName mentions per-100
+    is_rate = (
+        vtype.str.contains("rate", na=False) |
+        units.str.contains("per 100 ?000|per 100000|/100 ?000", regex=True, na=False) |
+        name_n.str.contains("per 100", na=False) |
+        name_n.str.contains("age[- ]?standard", na=False)
+    )
+
+    # Per-capita (rate per 1 person) if it looks like a rate but not explicitly per-100k
+    is_per_capita = is_rate & ~(
+        units.str.contains("per 100 ?000|per 100000|/100 ?000", regex=True, na=False) |
+        name_n.str.contains("per 100", na=False)
+    )
+
+    # Counts if ValueType says number/count or nothing indicates rate
+    is_count = (~is_rate) | vtype.str.contains("number|count", na=False)
+
+    # Label for metric (we'll still normalize later to per-100k)
+    metric = np.where(is_rate, "RATE", "COUNT")
 
     out["cause_code"] = cause_code
     out["cause_name"] = cause_name
-    out["metric"] = metric
+    out["component"]  = component
+    out["unit_tag"]   = np.where(is_per_capita, "PER_CAPITA", np.where(is_rate, "PER_100K", "COUNT"))
+    out["metric"]     = metric  # temporary tag; final label set after normalization
 
-    cols = ["country_iso3","year","cause_code","cause_name","value","value_low","value_high","metric"]
-    return out[cols]
+    keep = ["country_iso3","year","cause_code","cause_name","value","value_low","value_high",
+            "metric","IndicatorName","component","unit_tag"]
+    keep = [c for c in keep if c in out.columns]
+    return out[keep]
 
-# ------------------------ Main pipeline ------------------------
+
+# ------------------------ Population & unit unification ------------------------
+
+WB_POP_URL = "https://api.worldbank.org/v2/country/all/indicator/SP.POP.TOTL"
+
+def fetch_population(countries_iso3: List[str], years: List[int]) -> pd.DataFrame:
+    rows, page, pages = [], 1, 1
+    while page <= pages:
+        r = SESSION.get(WB_POP_URL, params={"format": "json", "per_page": 20000, "page": page}, timeout=120)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, list) and len(data) == 2:
+            meta, vals = data[0], data[1]
+            pages = int(meta.get("pages", 1))
+            rows.extend(vals or [])
+        page += 1
+    if not rows:
+        return pd.DataFrame(columns=["country_iso3","year","population"])
+    df = pd.DataFrame(rows)
+    df = df.rename(columns={"countryiso3code":"country_iso3", "date":"year", "value":"population"})
+    df["country_iso3"] = df["country_iso3"].astype(str).str.upper()
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")
+    df["population"] = pd.to_numeric(df["population"], errors="coerce")
+    df = df.dropna(subset=["country_iso3","year","population"])
+    df["year"] = df["year"].astype(int)
+    df = df[df["country_iso3"].isin(set(countries_iso3))]
+    df = df[df["year"].isin(set(years))]
+    return df[["country_iso3","year","population"]]
+
+def to_rate_per100k(df: pd.DataFrame, pop: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize all rows to DALYs per 100k:
+      - unit_tag == PER_100K: keep value
+      - unit_tag == PER_CAPITA: value * 100000
+      - unit_tag == COUNT: (value / population) * 100000
+    """
+    if df.empty:
+        df["daly_per_100k"] = pd.Series(dtype="float64")
+        return df
+
+    out = df.merge(pop, on=["country_iso3","year"], how="left")
+
+    # Base: NaN by default
+    out["daly_per_100k"] = np.nan
+
+    # Already per 100k
+    mask_100k = out["unit_tag"].eq("PER_100K")
+    out.loc[mask_100k, "daly_per_100k"] = out.loc[mask_100k, "value"]
+
+    # Per capita (per person) → scale up
+    mask_pc = out["unit_tag"].eq("PER_CAPITA")
+    out.loc[mask_pc, "daly_per_100k"] = out.loc[mask_pc, "value"] * 100_000
+
+    # Counts → divide by pop
+    mask_cnt = out["unit_tag"].eq("COUNT")
+    out.loc[mask_cnt, "daly_per_100k"] = (out.loc[mask_cnt, "value"] / out.loc[mask_cnt, "population"]) * 100_000
+
+    return out
+
+
+def build_daly_total_per100k(df: pd.DataFrame) -> pd.DataFrame:
+    key = ["country_iso3","year","cause_code","cause_name"]
+    daly = (df[df["component"].eq("DALY")]
+              .groupby(key, as_index=False)
+              .agg({"daly_per_100k":"first"}))
+    comp = (df[df["component"].isin(["YLL","YLD"])]
+              .groupby(key, as_index=False)
+              .agg({"daly_per_100k":"sum"}))
+    out = daly.merge(comp, on=key, how="outer", suffixes=("_daly","_yll_yld"))
+    out["daly_per_100k"] = out["daly_per_100k_daly"].fillna(out["daly_per_100k_yll_yld"])
+    return out[key + ["daly_per_100k"]]
+
+# ------------------------ Main ------------------------
 
 def run_pipeline() -> pd.DataFrame:
-    # Ensure output folder exists
     CLEAN_DIR.mkdir(parents=True, exist_ok=True)
     if SAVE_RAW:
         RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1) Pull & match DALY indicators
+    # 1) catalogue & match (DALY + YLL + YLD)
     cat = pull_indicator_catalogue()
     if cat.empty:
         print("[ERROR] WHO indicator catalogue is empty.")
         return pd.DataFrame()
-
     mapping = match_indicators(cat)
     if mapping.empty:
         print("[ERROR] No indicators matched disease patterns.")
         return pd.DataFrame()
 
-    # 2) Fetch all indicators and tidy
+    # 2) fetch -> collapse (relaxed) -> tidy
     frames: List[pd.DataFrame] = []
     for _, row in mapping.iterrows():
         code = str(row["indicator_code"])
+        component = str(row["component"])
         try:
             raw = fetch_indicator_all(code)
         except requests.HTTPError as e:
@@ -348,7 +452,7 @@ def run_pipeline() -> pd.DataFrame:
         reduced = prefer_total_stratum(raw)
         if reduced.empty:
             continue
-        tidy = tidy_who(reduced, str(row["cause_code"]), str(row["cause_name"]))
+        tidy = tidy_who(reduced, str(row["cause_code"]), str(row["cause_name"]), component)
         if not tidy.empty:
             frames.append(tidy)
 
@@ -358,32 +462,36 @@ def run_pipeline() -> pd.DataFrame:
 
     df = pd.concat(frames, ignore_index=True)
 
-    # 3) If multiple indicators map to the same cause, keep both metrics if different,
-    #    else prefer *counts* (more universal for ER denominator)
+    # 3) de-dup within (country,year,cause,component,metric)
     df["_rank"] = (df["metric"] == "DALYs per 100k population").astype(int)  # counts=0, rate=1
-    df = (df.sort_values(["country_iso3","year","cause_code","_rank"])
-            .drop_duplicates(subset=["country_iso3","year","cause_code","metric"], keep="first")
+    df = (df.sort_values(["country_iso3","year","cause_code","component","_rank"])
+            .drop_duplicates(subset=["country_iso3","year","cause_code","component","metric"], keep="first")
             .drop(columns=["_rank"]))
 
-    # 4) Final sanity: drop impossible values and years outside config (defensive)
-    df = df[df["value"].notna() & np.isfinite(df["value"])]
-    df = df[df["year"].isin(YEARS)]
+    # 4) unify to per-100k using WB population (for any count rows)
+    countries = sorted(df["country_iso3"].unique().tolist())
+    pop = fetch_population(countries, YEARS)
+    df = to_rate_per100k(df, pop)
 
-    # 5) Coverage log
-    have = sorted(df["cause_code"].unique())
-    missing = sorted(set(DISEASE_PATTERNS.keys()) - set(have))
-    print("\n[COVERAGE] causes captured:", ", ".join(have) if have else "(none)")
-    if missing:
-        print("[WARN] missing causes:", ", ".join(missing))
+    # 5) build DALY totals (prefer DALY; else YLL+YLD) in per-100k space
+    daly = build_daly_total_per100k(df)
 
-    # 6) Write exactly one Parquet
-    df.to_parquet(OUT_PARQUET, index=False)
-    print(f"\n[OK] Wrote {OUT_PARQUET} (rows={len(df)})")
+    # 6) aggregate across years: one row per country & cause (sum over years)
+    agg = (daly.rename(columns={"daly_per_100k": "value"})
+               .groupby(["country_iso3", "cause_code", "cause_name"], as_index=False)
+               .agg({"value": "sum"}))
 
-    # Small preview (safe)
+    # final schema
+    agg["metric"] = "DALYs per 100k population (sum across years)"
+    agg["value_low"] = np.nan
+    agg["value_high"] = np.nan
+    out = agg[["country_iso3","cause_code","cause_name","value","value_low","value_high","metric"]]
+
+    out.to_parquet(OUT_PARQUET, index=False)
+    print(f"\n[OK] Wrote {OUT_PARQUET} (rows={len(out)})")
     with pd.option_context("display.max_columns", None, "display.width", 1200):
-        print(df.head(12).to_string(index=False))
-    return df
+        print(out.head(12).to_string(index=False))
+    return out
 
 if __name__ == "__main__":
     run_pipeline()
