@@ -201,6 +201,10 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Runtime refresh state (snapshots themselves remain versioned)
+data/gold/refresh_status.json
+data/gold/.refresh.lock
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

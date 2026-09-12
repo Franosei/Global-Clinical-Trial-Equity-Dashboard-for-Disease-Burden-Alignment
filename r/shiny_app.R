@@ -69,13 +69,13 @@ poster_palette <- list(
 er_bin <- function(er) {
   cut(er,
       breaks = c(-Inf, 0.5, 0.8, 1.25, 2.0, Inf),
-      labels = c("< 0.5", "0.5–0.8", "0.8–1.25", "1.25–2.0", "> 2.0"),
+      labels = c("< 0.5", "0.5 to 0.8", "0.8 to 1.25", "1.25 to 2.0", "> 2.0"),
       right = TRUE)
 }
 
 fmt_pct   <- function(x) percent(x, accuracy = 0.01)
 fmt_num   <- function(x) comma(x, accuracy = 1)
-fmt_ratio <- function(x) ifelse(is.na(x), "—", sprintf("%.2f", x))
+fmt_ratio <- function(x) ifelse(is.na(x), "Not available", sprintf("%.2f", x))
 
 weighted_gini <- function(values, weights) {
   v <- as.numeric(values); w <- as.numeric(weights)
@@ -155,7 +155,7 @@ ui <- fluidPage(
       body { margin: 10px 12px; background:#FFFFFF; color:#111827; }
       .container-fluid { padding-left: 6px; padding-right: 6px; max-width: 1400px; }
 
-      /* Tile (main page title) — blue */
+      /* Tile: main page title in blue */
       h1 {
   margin-top: 12px;
   margin-bottom: 8px;
@@ -165,14 +165,14 @@ ui <- fluidPage(
   border-radius: 10px;
 }
 
-      /* Section headings (Key Figures, Formulae, Policy Planner, Country table) — red */
+      /* Section headings in red */
       h2{
         margin-top: 5px; margin-bottom: 8px;
         color:#FFFFFF; background:#0A192F; padding:8px 10px; border-radius:8px;
         font-size:15px; font-weight:500;
       }
 
-      /* Figure headings (Figure 1... etc) — red and same size */
+      /* Figure headings in red and the same size */
       .figure-title{
         font-size:15px; font-weight:500; margin-bottom:6px;
         color:#FFFFFF; background:#B91C1C; padding:8px 10px; border-radius:8px;
@@ -214,7 +214,7 @@ ui <- fluidPage(
         "Are clinical trial sites placed where disease burden lies? We investigate this by comparing ",
         "clinical trial site counts from CT.gov with global disease burden measured through WHO DALYs ",
         "(per-100k, cumulative), aggregated into fixed multi-year periods. ",
-        strong("Equity Ratio (ER) = trial_share / burden_share"),
+        strong("Equity Ratio (ER) = trial share / burden share"),
         " serves as the central measure of alignment, where values near 1 indicate equity between trial activity ",
         "and disease need. Group-level inequality is further summarised by Theil T and the burden-weighted ",
         "Gini of ER, highlighting global disparities in research investment. This dashboard provides an ",
@@ -263,7 +263,7 @@ ui <- fluidPage(
     )
   ),
   
-  # ---- ADDITION: Figure 1b — zero-site countries colored by burden ----
+  # ADDITION: Figure 1b, zero-site countries coloured by burden
   fluidRow(
     column(
       width = 12,
@@ -331,15 +331,15 @@ ui <- fluidPage(
   fluidRow(
     column(
       width = 6,
-      div(class="figure-title", "Executive View A — Impact: Burden Gap vs Sites Needed"),
+      div(class="figure-title", "Executive View A: Burden Gap and Sites Needed"),
       div(class="figure-sub subtle",
-          "x: burden share; y: positive gap (burden_share − trial_share). Bubble size = DALYs; colour = sites needed to reach ER = 1.",
+          "x: burden share; y: positive gap (burden share minus trial share). Bubble size = DALYs; colour = sites needed to reach ER = 1.",
           " Use this to prioritise countries where both burden and gap are large."),
       plotlyOutput("impact_gap_sites", height = 380)
     ),
     column(
       width = 6,
-      div(class="figure-title", "Executive View B — Trial Density vs Equity Ratio"),
+      div(class="figure-title", "Executive View B: Trial Density and Equity Ratio"),
       div(class="figure-sub subtle",
           "x: Equity Ratio (ER). y: trial sites per 1k DALYs (log scale). Vertical line = ER = 1.",
           " Distinguishes efficiency (high density) from inequity (high ER)."),
@@ -351,9 +351,9 @@ ui <- fluidPage(
   fluidRow(
     column(
       width = 12,
-      h2("Policy Planner — Allocate extra sites where gaps are largest"),
+      h2("Policy Planner: Allocate extra sites where gaps are largest"),
       div(class="subtle",
-          "This pragmatic rule places additional sites in proportion to the positive share gap (burden_share − trial_share). ",
+          "This pragmatic rule places additional sites in proportion to the positive share gap between burden and trial activity. ",
           "Use the slider to simulate a global uplift and observe the change in inequality. ",
           "This is not a recommendation per se, but a transparent starting point for planning discussions.")
     )
@@ -371,7 +371,7 @@ ui <- fluidPage(
   fluidRow(
     column(
       width = 12,
-      div(class="figure-sub subtle","Before vs after allocation — ER distribution (countries, relative density; log-scale)"),
+      div(class="figure-sub subtle","Before and after allocation: ER distribution (countries, relative density; log scale)"),
       plotlyOutput("planner_density", height = 260)
     )
   ),
@@ -392,7 +392,7 @@ server <- function(input, output, session) {
   
   output$period_label <- renderText({
     row <- periods[input$period, ]
-    paste0(row$interval_start, "–", row$interval_end)
+    paste0(row$interval_start, " to ", row$interval_end)
   })
   
   cur_period <- reactive({
@@ -760,7 +760,7 @@ server <- function(input, output, session) {
     tibble::tibble(
       Metric = c("Theil T", "Gini(ER|burden)"),
       Current = c(round(res$theil_before, 3), round(res$gini_before, 3)),
-      After_Reallocation = c(round(res$theil_after, 3), round(res$gini_after, 3)),
+      `After reallocation` = c(round(res$theil_after, 3), round(res$gini_after, 3)),
       Change = c(round(res$theil_after - res$theil_before, 3),
                  round(res$gini_after  - res$gini_before, 3))
     )

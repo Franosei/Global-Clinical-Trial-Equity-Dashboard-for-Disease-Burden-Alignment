@@ -17,6 +17,7 @@ Run:
 from __future__ import annotations
 import re
 import unicodedata
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 import yaml
@@ -41,7 +42,9 @@ def load_cfg() -> dict:
 
 CFG = load_cfg()
 
-YEARS         = list(range(int(CFG["years"]["start"]), int(CFG["years"]["end"]) + 1))
+_year_end     = CFG["years"]["end"]
+YEAR_END      = datetime.now(timezone.utc).year if str(_year_end).lower() == "current" else int(_year_end)
+YEARS         = list(range(int(CFG["years"]["start"]), YEAR_END + 1))
 BASE_GHO      = str(CFG["who_gho"]["base_url"]).rstrip("/") + "/"
 RETRY_TOTAL   = int(CFG.get("retries", {}).get("total", 5))
 RETRY_BACKOFF = float(CFG.get("retries", {}).get("backoff_factor", 0.5))
@@ -495,7 +498,7 @@ def run_pipeline() -> pd.DataFrame:
     # 5) Build DALY totals (prefer DALY; else YLL+YLD) in per-100k space
     daly = build_daly_total_per100k(df)
 
-    # QA: inspect yearly magnitudes (should look like hundreds–thousands per 100k)
+    # QA: inspect yearly magnitudes (should look like hundreds to thousands per 100k)
     if not daly.empty:
         print("\n[QA] sample yearly DALY per 100k (top 10):")
         try:

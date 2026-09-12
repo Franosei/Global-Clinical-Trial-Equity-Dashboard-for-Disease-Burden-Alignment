@@ -1,6 +1,6 @@
 # py/indices.py
 """
-Interval indices (2000–2005, 2006–2010, 2011–2015, 2016–2020, 2021–2025):
+Interval indices (2000 to 2005, 2006 to 2010, 2011 to 2015, 2016 to 2020, 2021 to 2025):
 Equity Ratio, Burden-Adjusted Trial Density, Gini & Theil
 
 Inputs:
@@ -26,7 +26,7 @@ Columns:
 Method notes:
   • WHO burden is country×cause (no year). We use it as a stable severity weight.
   • CT trial sites are aggregated into fixed intervals:
-        2000–2005, 2006–2010, 2011–2015, 2016–2020, 2021–2025
+        2000 to 2005, 2006 to 2010, 2011 to 2015, 2016 to 2020, 2021 to 2025
   • Universe is ALL (country×cause) that appear in WHO or CT.gov, crossed with all intervals.
     Missing trials/burden remain NaN in their columns; calculations treat missing trials/burden as 0 only for math.
 """
@@ -34,8 +34,12 @@ Method notes:
 from __future__ import annotations
 from pathlib import Path
 import sys
+from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
+import pycountry
+
+VALID_COUNTRY_ISO3 = frozenset(country.alpha_3 for country in pycountry.countries)
 
 # ------------------------ Paths ------------------------
 
@@ -80,7 +84,8 @@ def theil_T(trial_share: np.ndarray, burden_share: np.ndarray) -> float:
     """Theil T of allocation (trial_share vs burden_share) for a given (interval, cause)."""
     p = np.asarray(trial_share, dtype=float)
     b = np.asarray(burden_share, dtype=float)
-    m = np.isfinite(p) & np.isfinite(b) & (p >= 0) & (b >= 0)
+    # Equity is identifiable only where measured burden is positive.
+    m = np.isfinite(p) & np.isfinite(b) & (p >= 0) & (b > 0)
     p, b = p[m], b[m]
     if p.size == 0:
         return np.nan
@@ -96,7 +101,7 @@ def theil_T(trial_share: np.ndarray, burden_share: np.ndarray) -> float:
     # If all b==0, earlier guard returned NaN
     return float(np.nansum(term))
 
-# Fixed interval mapping: 2000–2005, 2006–2010, 2011–2015, 2016–2020, 2021–2025
+# Fixed interval mapping: 2000 to 2005, 2006 to 2010, 2011 to 2015, 2016 to 2020, 2021 to 2025
 _INTERVALS = [
     (2000, 2005),
     (2006, 2010),
@@ -104,12 +109,15 @@ _INTERVALS = [
     (2016, 2020),
     (2021, 2025),
 ]
+while _INTERVALS[-1][1] < datetime.now(timezone.utc).year:
+    _start = _INTERVALS[-1][1] + 1
+    _INTERVALS.append((_start, _start + 4))
 
 def assign_interval(year: int) -> tuple[int, int, str] | None:
     """Return (start, end, label) for year in fixed intervals; None if outside all."""
     for s, e in _INTERVALS:
         if s <= year <= e:
-            return s, e, f"{s}–{e}"
+            return s, e, f"{s} to {e}"
     return None
 
 # ------------------------ Pipeline ------------------------
@@ -124,6 +132,11 @@ def run_indices() -> pd.DataFrame:
 
     who = pd.read_parquet(IN_WHO)
     ct  = pd.read_parquet(IN_CT)
+
+    # WHO extracts can contain three-letter regional aggregates (AFR, GLO,
+    # etc.). They are not countries and must not enter country-level shares.
+    who = who[who["country_iso3"].astype(str).isin(VALID_COUNTRY_ISO3)].copy()
+    ct = ct[ct["country_iso3"].astype(str).isin(VALID_COUNTRY_ISO3)].copy()
 
     # ---- WHO: country×cause (no year). Keep original burden column; compute standardized.
     for c in ["country_iso3", "cause_code", "cause_name"]:
@@ -201,7 +214,7 @@ def run_indices() -> pd.DataFrame:
     causes = causes.drop(columns=["pair"])
 
     intervals_df = pd.DataFrame(
-        [(s, e, f"{s}–{e}") for (s, e) in _INTERVALS],
+        [(s, e, f"{s} to {e}") for (s, e) in _INTERVALS],
         columns=["interval_start","interval_end","interval_label"]
     )
 

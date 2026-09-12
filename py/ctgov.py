@@ -20,7 +20,8 @@ Run:
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, List, Optional, Iterable, Set
+from typing import List, Optional, Iterable, Set
+from datetime import datetime, timezone
 import re
 import unicodedata
 import yaml
@@ -32,7 +33,10 @@ from requests.adapters import HTTPAdapter, Retry
 import pycountry
 
 # IMPORTANT: use absolute import as requested
-from global_health_sources import DISEASE_PATTERNS, norm_text
+try:
+    from .global_health_sources import DISEASE_PATTERNS, norm_text
+except ImportError:  # Supports direct execution: python py/ctgov.py
+    from global_health_sources import DISEASE_PATTERNS, norm_text
 
 # Paths & Config ------------------------
 
@@ -47,10 +51,12 @@ def load_cfg() -> dict:
         return yaml.safe_load(f)
 
 CFG = load_cfg()
-YEARS = list(range(int(CFG["years"]["start"]), int(CFG["years"]["end"]) + 1))
+_year_end = CFG["years"]["end"]
+YEAR_END = datetime.now(timezone.utc).year if str(_year_end).lower() == "current" else int(_year_end)
+YEARS = list(range(int(CFG["years"]["start"]), YEAR_END + 1))
 
 # v2 base endpoint
-BASE_CT_V2 = "https://clinicaltrials.gov/api/v2/"
+BASE_CT_V2 = str(CFG.get("ctgov", {}).get("base_url", "https://clinicaltrials.gov/api/v2/")).rstrip("/") + "/"
 
 RETRY_TOTAL = int(CFG.get("retries", {}).get("total", 5))
 RETRY_BACKOFF = float(CFG.get("retries", {}).get("backoff_factor", 0.5))
@@ -83,6 +89,11 @@ def http_get_json(url: str, params: dict) -> dict:
     r = SESSION.get(url, params=params, timeout=180)
     r.raise_for_status()
     return r.json()
+
+
+def get_api_version() -> dict:
+    """Return the upstream API and dataset timestamps used for freshness labels."""
+    return http_get_json(BASE_CT_V2 + "version", {})
 
 # v2 paging ------------------------
 
@@ -205,7 +216,14 @@ def match_condition_to_cause(conditions: List[str], cause_keywords: List[str]) -
         return False
     cond_n = [norm_text(c) for c in conditions if c]
     needles = [norm_text(k) for k in cause_keywords]
-    return any(n and (n in c) for c in cond_n for n in needles)
+    def matches(condition: str, needle: str) -> bool:
+        if not needle:
+            return False
+        if len(needle) <= 3:
+            return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", condition) is not None
+        return needle in condition
+
+    return any(matches(condition, needle) for condition in cond_n for needle in needles)
 
 def _ascii(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
@@ -245,7 +263,11 @@ def unique_tokens_for_cause(keywords: List[str], cause_name: str, max_tokens: in
     Build a small set of unique, useful tokens to query individually with query.cond.
     We include the cause_name and the raw keywords, deduped case-insensitively.
     """
-    toks = [t.strip() for t in (keywords + [cause_name]) if t and t.strip()]
+    useful_acronyms = {"tb", "hiv", "aids", "copd", "ckd", "ihd", "lri", "rti", "cbvd"}
+    toks = [
+        t.strip() for t in (keywords + [cause_name])
+        if t and t.strip() and (len(norm_text(t)) >= 4 or norm_text(t) in useful_acronyms)
+    ]
     # lightweight dedupe preserving order
     seen: Set[str] = set()
     uniq: List[str] = []
@@ -260,12 +282,27 @@ def unique_tokens_for_cause(keywords: List[str], cause_name: str, max_tokens: in
 
 # Main Extraction ------------------------
 
-def pull_ctgov_sites() -> pd.DataFrame:
+def _atomic_write_parquet(frame: pd.DataFrame, path: Path) -> None:
+    """Publish a complete snapshot atomically so readers never see half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    frame.to_parquet(temporary, index=False)
+    temporary.replace(path)
+
+
+def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFrame:
+    """Pull all configured diseases, or only ``cause_codes``, from the live API."""
     CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 
     site_rows: List[dict] = []
+    selected = set(cause_codes or DISEASE_PATTERNS.keys())
+    unknown = selected.difference(DISEASE_PATTERNS)
+    if unknown:
+        raise ValueError(f"Unknown cause code(s): {', '.join(sorted(unknown))}")
 
     for cause_code, (cause_name, keywords) in DISEASE_PATTERNS.items():
+        if cause_code not in selected:
+            continue
         tokens = unique_tokens_for_cause(keywords, cause_name, max_tokens=10)
         print(f"[CT.gov v2] {cause_code} :: tokens -> {', '.join(tokens)}")
 
@@ -314,7 +351,8 @@ def pull_ctgov_sites() -> pd.DataFrame:
         print("[WARN] No CT.gov v2 rows collected.")
         # still write an empty parquet with the right schema
         empty = pd.DataFrame(columns=["country_iso3","year","cause_code","cause_name","phase","trial_sites"])
-        empty.to_parquet(OUT_PARQUET, index=False)
+        if selected == set(DISEASE_PATTERNS):
+            _atomic_write_parquet(empty, OUT_PARQUET)
         return empty
 
     # 1) De-duplicate unique trial per country/year/cause
@@ -336,9 +374,18 @@ def pull_ctgov_sites() -> pd.DataFrame:
     agg["phase"] = agg["phase"].astype(str)
     agg["trial_sites"] = agg["trial_sites"].astype(int)
 
-    agg.to_parquet(OUT_PARQUET, index=False)
+    if selected == set(DISEASE_PATTERNS):
+        published = agg
+    elif OUT_PARQUET.exists():
+        current = pd.read_parquet(OUT_PARQUET)
+        published = pd.concat(
+            [current[~current["cause_code"].isin(selected)], agg], ignore_index=True
+        ).sort_values(["cause_code", "year", "country_iso3", "phase"])
+    else:
+        published = agg
+    _atomic_write_parquet(published, OUT_PARQUET)
 
-    print(f"[OK] Wrote {OUT_PARQUET} (rows={len(agg)})")
+    print(f"[OK] Wrote {OUT_PARQUET} (rows={len(published)})")
     with pd.option_context("display.max_columns", None, "display.width", 1000):
         print(agg.head(12).to_string(index=False))
     return agg

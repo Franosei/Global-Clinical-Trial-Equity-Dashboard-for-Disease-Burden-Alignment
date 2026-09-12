@@ -3,7 +3,17 @@
 # Study years (you can widen later)
 years:
   start: 2000
-  end: 2024
+  # "current" is resolved at runtime, so the pipeline does not silently go stale.
+  end: current
+
+live:
+  # Reload completed snapshots from disk at this cadence. The upstream
+  # ClinicalTrials.gov source itself refreshes on weekdays.
+  dashboard_poll_seconds: 300
+  freshness_warning_hours: 36
+  forecast_horizon_years: 3
+  forecast_lookback_years: 8
+  simulation_draws: 500
 
 # API call settings
 retries:
@@ -19,6 +29,8 @@ who_gho:
 
 ctgov:
   base_url: "https://clinicaltrials.gov/api/v2/"
+  page_size: 1000
+  date_rule: "start"
   site_fields: ["locations", "overallStatus", "phase", "sponsors"]
 
 gbd_ihme:
