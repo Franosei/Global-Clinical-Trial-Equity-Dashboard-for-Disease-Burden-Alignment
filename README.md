@@ -1,5 +1,7 @@
 # Global Clinical Trial Equity Intelligence
 
+![The Trial Equity Atlas dashboard: the disease and year controls, the headline finding, the key measures and the Resource plan inputs](docs/images/resource-plan.png)
+
 ## Overview
 
 Clinical research is most useful when the populations represented in trials reflect the populations affected by disease. In practice, research activity is often concentrated in a relatively small number of countries, while substantial disease burden remains under-represented.
