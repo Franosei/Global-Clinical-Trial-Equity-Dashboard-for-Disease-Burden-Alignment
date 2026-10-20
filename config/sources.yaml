@@ -21,17 +21,44 @@ retries:
   backoff_factor: 0.5   # exponential backoff: 0.5s, 1s, 2s, ...
 
 # Data sources
-who_gho:
-  base_url: "https://ghoapi.azureedge.net/api/"
-  indicators:
-    - DALY_100000 # DALYs per 100k pop (age-standardised)
-    - DALY_NUMBER # DALY counts (if available)
+# WHO Global Health Estimates: country DALYs by cause (absolute counts). Each
+# analysis period uses the estimate years inside it, else the latest earlier.
+who_ghe:
+  release: "GHE2023"
+  years: [2000, 2010, 2015, 2019, 2020, 2021, 2022, 2023]
+  daly_by_country_url: "https://cdn.who.int/media/docs/default-source/gho-documents/global-health-estimates/daly_bycountry_age_sex_{year}_2026-10-01.xlsx"
 
 ctgov:
   base_url: "https://clinicaltrials.gov/api/v2/"
   page_size: 1000
   date_rule: "start"
   site_fields: ["locations", "overallStatus", "phase", "sponsors"]
+
+world_bank:
+  base_url: "https://api.worldbank.org/v2/"
+  # ICP 2021 price level index for "Actual health" (World = 100) scales site
+  # costs between countries. 2021 is the ICP benchmark year.
+  icp_source: "90"
+  icp_year: 2021
+
+# Resource-aware site planner. Monetary values are planner inputs, entered in
+# US dollars at the reference country's price level, and are editable in the
+# dashboard. They are starting points, not estimates for any specific protocol.
+planner:
+  reference_country: USA
+  # Widely cited Tufts CSDD figure for activating one site for one study
+  # (approx. US$25,000; dated, US prices). Replace with your own quotes.
+  study_startup_cost: 25000
+  # One-time cost to qualify and equip a facility with no research history for
+  # this disease. No robust public benchmark exists: set from your own data.
+  new_site_cost: 100000
+  budget: 5000000
+  # A facility counts as existing capacity if it started a study of this
+  # disease in the selected years or this many earlier windows of equal length.
+  recency_windows: 1
+  # New-site capacity is measured from facilities in the same country when at
+  # least this many named facilities exist, else the income group, else global.
+  min_facilities_for_benchmark: 5
 
 gbd_ihme:
   base_url: "http://ghdx.healthdata.org/gbd-results-tool"

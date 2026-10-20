@@ -201,6 +201,9 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Cached source downloads (re-fetched by the pipeline)
+data/raw/
+
 # Runtime refresh state (snapshots themselves remain versioned)
 data/gold/refresh_status.json
 data/gold/.refresh.lock

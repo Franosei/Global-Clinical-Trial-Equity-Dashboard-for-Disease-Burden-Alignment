@@ -18,8 +18,9 @@ The application is designed around practical research planning questions:
 - Has global trial activity for the selected disease been increasing or declining?
 - How might an additional portfolio of trial sites change the overall distribution?
 - How sensitive are scenario results to uncertainty in burden and site placement?
+- For a given budget, how much alignment can be bought, and how much of it can come from sites that already run trials rather than new ones?
 
-The dashboard provides an executive overview, a country-level analytical table, a short-term forecast and a scenario planning workspace. All calculations are performed from versioned Parquet snapshots so that results can be reproduced outside the user interface.
+The dashboard provides an executive overview, a country-level analytical table, a short-term forecast, a scenario planning workspace and a resource planner. All calculations are performed from versioned Parquet snapshots so that results can be reproduced outside the user interface.
 
 ## Data sources
 
@@ -31,13 +32,21 @@ The historical extraction uses a unique NCT study and country combination as its
 
 Conditions are assigned to disease groups using a controlled set of disease names and synonyms. A study can contribute to more than one disease group when its registered conditions genuinely match more than one group. Short acronyms are matched as complete terms to reduce false classifications.
 
+The extraction also keeps facility-level detail (facility name, city, coordinates) in `data/clean/ctgov_facilities.parquet`. About a third of listings are anonymised by sponsors ("Research Site", "GSK Investigational Site", a call-centre notice). They are detected by name pattern, or because one name is listed in several cities within the same study, and are excluded from facility-level capacity measures.
+
 ### Disease burden
 
-Burden data are drawn from the [WHO Global Health Observatory](https://www.who.int/data/gho/info/gho-odata-api). The current repository snapshot uses cumulative DALY rates per 100,000 population across the configured years. WHO regional aggregates are excluded from country-level calculations.
+Burden data are the [WHO Global Health Estimates 2023](https://www.who.int/data/gho/data/themes/mortality-and-global-health-estimates/global-health-estimates-leading-causes-of-dalys) country tables: absolute DALYs by cause for both sexes and all ages, for the estimate years 2000, 2010, 2015 and 2019 to 2023. Each disease maps to exactly one WHO GHE cause code (for example tuberculosis is code 30 and HIV/AIDS code 100). The GHO OData API is not used because it publishes cause-specific DALYs only for regions.
 
-Burden estimates are published less frequently than trial registrations. They are therefore treated as a reference distribution rather than a live epidemiological signal. The dashboard does not imply that both sources have the same reporting date or update frequency.
+You choose any range of years in the dashboard (for example 2019 to 2024, or a single year). Trial activity is the sum of study starts across those years. Burden is the mean of the WHO estimate years inside the range; a range with none (such as 2024 to 2026) uses the latest earlier estimate year. The line under the year selector shows which estimate years were used. When the range ends in the current year, that year counts only studies registered so far. The default view is the five most recent complete years.
 
-There is an important interpretive limitation. A share calculated from country-level DALY rates describes the distribution of recorded burden intensity across countries. It is not the same as a share of absolute global DALY counts. Population-weighted absolute burden should be used before this system is relied upon for formal resource allocation.
+The pipeline still publishes `data/gold/country_interval_disease.parquet` for fixed five-year blocks, for export and the R implementation. It uses the same burden rule.
+
+Shares are calculated from absolute DALYs, so a country's share reflects how many people are affected, not only how intensely. The DALY rate per 100,000 is kept alongside for reference.
+
+Burden estimates are published less frequently than trial registrations. They are therefore treated as a reference distribution rather than a live epidemiological signal.
+
+> **Correction (October 2026).** Earlier snapshots matched WHO indicators by keyword and took any code beginning `SA_` to be a DALY series. In the WHO catalogue `SA_` denotes substance-abuse indicators, so several diseases were measured with unrelated series (tuberculosis used drowning DALYs and HIV/AIDS used alcohol-policy indicators). Results produced before this correction should not be used.
 
 ## Core measures
 
@@ -95,6 +104,43 @@ Allocations are whole numbers. The dashboard recalculates country shares, Equity
 
 These scenarios are planning aids. A real site strategy would also need evidence on eligible population, standard of care, competing trials, investigator capability, laboratory and pharmacy infrastructure, regulatory timelines, contracting, cost, travel burden and community acceptability.
 
+## Resource planner
+
+The equity measures say how many additional study placements a country needs. A placement does not have to mean a new site. A facility that has already run studies of the disease can host more, and a new site, once established, can host several studies. The resource planner turns a budget into a plan that uses proven capacity first and opens new sites only where that buys more alignment per dollar.
+
+### What is measured
+
+| Input | Source | Definition |
+| --- | --- | --- |
+| Existing spare capacity | ClinicalTrials.gov facility listings | For each named facility, the most studies of the disease it started in any window as long as the selected range (ending no later than the range), minus the studies it already has in the selected range. Only facilities active in the selected range or the equal-length window before it count. |
+| New-site capacity | ClinicalTrials.gov facility listings | The median, 75th or 90th percentile (an observed value) of demonstrated capacity among facilities in the same country. Where fewer than five named facilities exist, the World Bank income group is used, then all countries. |
+| Country cost level | World Bank ICP 2021, "Actual health" price level index (World = 100) | Costs are scaled by the country's index relative to the reference country. The ICP GDP price level is a labelled fallback. Countries with neither are not allocated and are listed. |
+| Infrastructure context | World Development Indicators | Physicians and hospital beds per 1,000, electricity access, health spending per capita, the logistics performance index and researchers per million, shown for each country in the plan. |
+| Candidate cities | ClinicalTrials.gov facility listings | For countries that need a new site, the cities with the most named facilities active in any tracked disease recently. A country with none is marked as having no recorded research facility. |
+
+### What the planner enters
+
+- **Budget**, in US dollars at the reference country's prices.
+- **Study start-up cost per site.** The default of US$25,000 is the widely cited Tufts CSDD figure for activating one site for one study. It is dated and reflects US prices.
+- **Extra one-time cost of a new site.** This covers qualifying and equipping a facility new to the disease. No robust public benchmark exists, so the default of US$100,000 is a placeholder to be replaced. The panel "If a new site costs more or less" shows how the plan changes at 0.5, 2 and 4 times this value.
+
+### How the plan is chosen
+
+At each step the planner compares, across eligible countries, two actions:
+
+1. Add one study at a facility with spare capacity, at the study start-up cost.
+2. Establish a new site, at the new-site cost plus study start-up costs, and fill it up to its measured capacity or the country's parity need.
+
+It takes the action with the largest gain in alignment score per dollar, and stops when the budget runs out or no action improves alignment. When the portfolio is so small that any single placement overshoots a country's burden share, the planner looks ahead. It tries rounds of 2, 4, 8 and more placements, shared out by each country's gap to its burden-proportional target. The baseline for comparison opens one new site for every placement.
+
+The dashboard reports the alignment reached, the existing facilities and new sites involved, the spend, and the saving for the same equity gain compared with the baseline. It also shows a spend-to-alignment curve to three times the budget, a map of the facilities and cities in the plan, and an exportable country table.
+
+### Limits
+
+- Facility names are free text. Name variants of one hospital are counted as separate facilities, and anonymised listings are excluded. Both understate existing capacity, so the plan errs towards opening new sites.
+- Capacity is the number of studies a facility started within a window as long as the selected range, not participants enrolled. Very short ranges (one or two years) give small, noisy capacity figures.
+- The planner does not model recruitment rates, regulatory timelines, competing trials or sponsor strategy, and cost scaling uses a whole-sector health price level, not quotes for a specific protocol.
+
 ## Live data behaviour
 
 The application uses near-real-time refresh rather than continuous streaming. A user can refresh the selected disease directly from ClinicalTrials.gov. Once extraction and validation complete, the clean and gold data layers are published atomically. A running dashboard will therefore see either the previous complete snapshot or the new complete snapshot, never a partly written file.
@@ -138,11 +184,12 @@ The complete pipeline can be run with:
 py -m py.build
 ```
 
-The build performs three stages:
+The build performs four stages:
 
-1. Retrieve and harmonise WHO disease burden data.
-2. Retrieve and classify ClinicalTrials.gov records.
-3. Construct the country, period and disease equity measures used by the dashboard.
+1. Retrieve WHO Global Health Estimates burden data.
+2. Retrieve and classify ClinicalTrials.gov records, including facility detail.
+3. Retrieve World Bank price levels and infrastructure indicators.
+4. Construct the country, period and disease equity measures used by the dashboard.
 
 A full ClinicalTrials.gov rebuild can take some time because records returned by several disease synonyms must be retrieved and deduplicated.
 
@@ -154,7 +201,10 @@ A full ClinicalTrials.gov rebuild can take some time because records returned by
 | `assets/style.css` | Responsive visual design |
 | `config/sources.yaml` | Source, refresh and modelling settings |
 | `py/ctgov.py` | ClinicalTrials.gov extraction and condition classification |
-| `py/global_health_sources.py` | WHO burden extraction and harmonisation |
+| `py/global_health_sources.py` | WHO Global Health Estimates burden extraction |
+| `py/resources.py` | World Bank price levels, infrastructure indicators and country metadata |
+| `py/planner.py` | Facility capacity, cost scaling and budget-constrained site planning |
+| `py/methods.py` | Statistical methods reference shown in the dashboard's Methods tab |
 | `py/indices.py` | Country-level equity calculations |
 | `py/analytics.py` | Forecasting and allocation simulation |
 | `py/live.py` | Atomic selected-disease refresh and provenance metadata |
@@ -175,7 +225,7 @@ py -m ruff check app.py py tests
 py -m compileall -q app.py py
 ```
 
-The tests cover the parity calculation, integer allocation, alignment score, forecast intervals, current-year interval handling, disease acronym matching and exclusion of WHO regional aggregates.
+The tests cover the parity calculation, integer allocation, alignment score, forecast intervals, current-year interval handling, disease acronym matching and exclusion of WHO regional aggregates. Planner tests cover facility capacity (excluding anonymised listings and later activity), the fallback for new-site capacity, cost scaling without imputation, reuse of capacity against the baseline, exclusion of uncosted countries, the lookahead for small portfolios, and how placements are assigned to facilities.
 
 ## Appropriate use
 

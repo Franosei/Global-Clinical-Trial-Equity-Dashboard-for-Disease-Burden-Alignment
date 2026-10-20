@@ -67,3 +67,12 @@ def test_short_disease_acronyms_use_token_boundaries():
 
 def test_gold_layer_excludes_who_regional_aggregates():
     assert not {"AFR", "AMR", "EMR", "EUR", "GLO", "SEA", "WHO", "WPR"}.intersection(VALID_COUNTRY_ISO3)
+
+
+def test_forecast_reports_its_fitted_model():
+    years = list(range(2017, 2025))
+    annual = pd.DataFrame({"cause_code": ["X"] * 8, "year": years,
+                           "trial_sites": [round(np.expm1(3 + 0.1 * i)) for i in range(8)]})
+    model = forecast_trial_sites(annual, "X").attrs["model"]
+    assert (model["first_year"], model["last_year"], model["n_years"]) == (2017, 2024, 8)
+    assert abs(model["slope"] - 0.1) < 0.01 and model["r_squared"] > 0.99

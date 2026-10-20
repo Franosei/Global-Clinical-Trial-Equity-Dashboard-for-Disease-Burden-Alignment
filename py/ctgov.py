@@ -8,11 +8,12 @@ ClinicalTrials.gov v2 → country-year-disease site counts (single parquet outpu
 - Trials that match multiple diseases are split across those diseases
 - De-dup per (nct_id, country_iso3, year, cause_code)
 
-Output (single file):
+Outputs:
   data/clean/ctgov_sites.parquet
-
-Schema:
-  country_iso3, year, cause_code, cause_name, phase, trial_sites
+     country_iso3, year, cause_code, cause_name, phase, trial_sites
+  data/clean/ctgov_facilities.parquet
+     one row per (nct_id, cause_code, facility_key): the facility-level detail
+     used to measure existing site capacity for resource planning
 
 Run:
   python -m py.ctgov     OR     python py/ctgov.py
@@ -45,6 +46,19 @@ CFG_PATH = REPO_ROOT / "config" / "sources.yaml"
 DATA_DIR = REPO_ROOT / "data"
 CLEAN_DIR = DATA_DIR / "clean"
 OUT_PARQUET = CLEAN_DIR / "ctgov_sites.parquet"
+OUT_FACILITIES = CLEAN_DIR / "ctgov_facilities.parquet"
+
+# Only the modules the extraction reads. Requesting a subset keeps pages small;
+# the condition modules are the same ones used for disease matching.
+STUDY_FIELDS = ",".join([
+    "protocolSection.identificationModule.nctId",
+    "protocolSection.statusModule",
+    "protocolSection.conditionsModule",
+    "protocolSection.designModule.phases",
+    "protocolSection.designModule.enrollmentInfo",
+    "protocolSection.contactsLocationsModule.locations",
+    "derivedSection.conditionBrowseModule",
+])
 
 def load_cfg() -> dict:
     with open(CFG_PATH, "r", encoding="utf-8") as f:
@@ -105,18 +119,25 @@ def ctgov_v2_iter_token(token_query: str, page_size: int = DEFAULT_PAGE_SIZE) ->
     """
     token = ""
     size = max(50, int(page_size))
+    use_fields = True
     while True:
         params = {
             "query.cond": token_query,  # simple single-token condition search
             "pageSize": str(size),
             "format": "json",
         }
+        if use_fields:
+            params["fields"] = STUDY_FIELDS
         if token:
             params["pageToken"] = token
         try:
             page = http_get_json(BASE_CT_V2 + "studies", params)
         except requests.HTTPError as e:
             status = getattr(e, "response", None).status_code if getattr(e, "response", None) else None
+            if status == 400 and use_fields:
+                print(f"[WARN] 400 for '{token_query}' with field subset; retrying full records")
+                use_fields = False
+                continue
             if status == 400 and size > 100:
                 print(f"[WARN] 400 for '{token_query}'; retry with smaller pageSize (was {size} → 100)")
                 size = 100
@@ -258,6 +279,26 @@ def country_to_iso3(label: Optional[str]) -> Optional[str]:
         return code
     return None
 
+# Sponsors frequently anonymise locations ("Research Site", "GSK Investigational
+# Site", a call-centre notice). Grouping those by name would fabricate large
+# facilities, so they are flagged and excluded from capacity measurement.
+_ANONYMISED_FACILITY = re.compile(
+    r"\b(research|investigational|investigative|investigator|clinical|study|trial|local)"
+    r" (site|sites|institution|institutions|facility)\b"
+    r"|for additional information|administrative office|call cent(er|re)"
+    r"|^(site|facility)( \w+)?$|^\d+$"
+)
+
+
+def facility_is_anonymised(name: Optional[str]) -> bool:
+    text = norm_text(name or "")
+    return len(text) <= 3 or _ANONYMISED_FACILITY.search(text) is not None
+
+
+def facility_key(name: Optional[str], city: Optional[str], iso3: str) -> str:
+    return f"{iso3}|{norm_text(city or '')}|{norm_text(name or '')}"
+
+
 def unique_tokens_for_cause(keywords: List[str], cause_name: str, max_tokens: int = 8) -> List[str]:
     """
     Build a small set of unique, useful tokens to query individually with query.cond.
@@ -290,11 +331,66 @@ def _atomic_write_parquet(frame: pd.DataFrame, path: Path) -> None:
     temporary.replace(path)
 
 
+_ISO3_CACHE: dict = {}
+
+
+def _country_iso3_cached(label: Optional[str]) -> Optional[str]:
+    if label not in _ISO3_CACHE:
+        _ISO3_CACHE[label] = country_to_iso3(label)
+    return _ISO3_CACHE[label]
+
+
+FACILITY_COLUMNS = [
+    "nct_id", "cause_code", "year", "phase", "country_iso3", "facility_key",
+    "facility", "city", "lat", "lon", "anonymised", "location_status",
+    "overall_status", "enrollment",
+]
+
+
+def classify_facilities(frame: pd.DataFrame) -> pd.DataFrame:
+    """Flag anonymised listings and build stable facility keys.
+
+    Two rules: the name matches a known placeholder pattern, or the same name is
+    listed in two or more cities within one study. A real facility has one
+    location, so a name repeated across a study's cities is a sponsor label.
+    """
+    frame = frame.copy()
+    name = frame["facility"].fillna("").map(norm_text)
+    city = frame["city"].fillna("").map(norm_text)
+    cities_per_name = (pd.DataFrame({"nct_id": frame["nct_id"], "name": name, "city": city})
+                       .groupby(["nct_id", "name"])["city"].transform("nunique"))
+    frame["anonymised"] = frame["facility"].map(facility_is_anonymised) | (cities_per_name >= 2)
+    frame["facility_key"] = frame["country_iso3"] + "|" + city + "|" + name
+    # Anonymised entries cannot be told apart, so each listing stays distinct.
+    anonymous = frame["anonymised"]
+    frame.loc[anonymous, "facility_key"] = (
+        frame.loc[anonymous, "facility_key"] + "|anon"
+        + frame.loc[anonymous].groupby(["nct_id", "cause_code", "facility_key"]).cumcount().astype(str)
+    )
+    return frame.drop_duplicates(subset=["nct_id", "cause_code", "facility_key"])
+
+
+def _publish_facilities(rows: List[tuple], selected: Set[str]) -> pd.DataFrame:
+    """Write one row per study, disease and facility, merging partial refreshes."""
+    frame = classify_facilities(pd.DataFrame(rows, columns=FACILITY_COLUMNS))
+    frame["year"] = frame["year"].astype(int)
+    for column in ("lat", "lon", "enrollment"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if selected != set(DISEASE_PATTERNS) and OUT_FACILITIES.exists():
+        current = pd.read_parquet(OUT_FACILITIES)
+        frame = pd.concat([current[~current["cause_code"].isin(selected)], frame], ignore_index=True)
+    frame = frame.sort_values(["cause_code", "country_iso3", "facility_key", "year"]).reset_index(drop=True)
+    _atomic_write_parquet(frame, OUT_FACILITIES)
+    print(f"[OK] Wrote {OUT_FACILITIES} (rows={len(frame)})")
+    return frame
+
+
 def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFrame:
     """Pull all configured diseases, or only ``cause_codes``, from the live API."""
     CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 
     site_rows: List[dict] = []
+    facility_rows: List[tuple] = []
     selected = set(cause_codes or DISEASE_PATTERNS.keys())
     unknown = selected.difference(DISEASE_PATTERNS)
     if unknown:
@@ -305,6 +401,9 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
             continue
         tokens = unique_tokens_for_cause(keywords, cause_name, max_tokens=10)
         print(f"[CT.gov v2] {cause_code} :: tokens -> {', '.join(tokens)}")
+        # Synonym queries return overlapping studies; each study is processed
+        # once per disease (both outputs are de-duplicated on nct_id anyway).
+        seen_nct: Set[str] = set()
 
         # query one token at a time to avoid 400s from long OR strings
         for tkn in tokens:
@@ -317,8 +416,9 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
                     stat = ps.get("statusModule", {}) or {}
 
                     nct = ident.get("nctId")
-                    if not nct:
+                    if not nct or nct in seen_nct:
                         continue
+                    seen_nct.add(nct)
 
                     # Match disease using conditions + browse leaves + MeSH (+ derived fallback)
                     conditions = extract_condition_texts(s)
@@ -331,11 +431,13 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
                         continue
 
                     phase_std = standardize_phase_v2(desm.get("phases"))
+                    enrollment = (desm.get("enrollmentInfo") or {}).get("count")
+                    overall_status = stat.get("overallStatus")
 
                     locations = (locm.get("locations") or [])
                     for loc in locations:
-                        cname = (loc or {}).get("country")
-                        iso3 = country_to_iso3(cname)
+                        loc = loc or {}
+                        iso3 = _country_iso3_cached(loc.get("country"))
                         if not iso3:
                             continue
                         site_rows.append({
@@ -346,6 +448,16 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
                             "cause_name": cause_name,
                             "phase": phase_std,
                         })
+                        name = (loc.get("facility") or "").strip()
+                        city = (loc.get("city") or "").strip()
+                        geo = loc.get("geoPoint") or {}
+                        facility_rows.append((
+                            nct, cause_code, int(year), phase_std, iso3,
+                            facility_key(name, city, iso3), name, city,
+                            geo.get("lat"), geo.get("lon"),
+                            facility_is_anonymised(name), loc.get("status"),
+                            overall_status, enrollment,
+                        ))
 
     if not site_rows:
         print("[WARN] No CT.gov v2 rows collected.")
@@ -373,6 +485,8 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
     agg["cause_name"] = agg["cause_name"].astype(str)
     agg["phase"] = agg["phase"].astype(str)
     agg["trial_sites"] = agg["trial_sites"].astype(int)
+
+    _publish_facilities(facility_rows, selected)
 
     if selected == set(DISEASE_PATTERNS):
         published = agg

@@ -5,8 +5,8 @@ Equity Ratio, Burden-Adjusted Trial Density, Gini & Theil
 
 Inputs:
   data/clean/who_daly_selected.parquet
-     • country_iso3, cause_code, cause_name, value, value_low, value_high, metric
-       (WHO burden already unified to DALYs per 100k and SUMMED across all years in config)
+     • country_iso3, cause_code, cause_name, year, dalys, population, daly_rate_per_100k
+       (WHO Global Health Estimates, absolute DALYs per estimate year)
 
   data/clean/ctgov_sites.parquet
      • country_iso3, year, cause_code, cause_name, phase, trial_sites
@@ -17,14 +17,16 @@ Output (gold, dashboard-ready):
 Columns:
   country_iso3, interval_start, interval_end, interval_label,
   cause_code, cause_name,
-  trial_sites, burden_dalys,
+  trial_sites, burden_dalys, burden_rate_per_100k, burden_years,
   trial_share, burden_share, equity_ratio,
   trial_density_per_k_dalys,
   gini_er_weighted, theil_T,
   metric_kind, metric_label
 
 Method notes:
-  • WHO burden is country×cause (no year). We use it as a stable severity weight.
+  • Burden is absolute DALYs per year, so shares are population weighted. Each
+    period uses the mean of the WHO estimate years inside it; a period with no
+    estimate year (the current one) uses the latest earlier estimate year.
   • CT trial sites are aggregated into fixed intervals:
         2000 to 2005, 2006 to 2010, 2011 to 2015, 2016 to 2020, 2021 to 2025
   • Universe is ALL (country×cause) that appear in WHO or CT.gov, crossed with all intervals.
@@ -120,6 +122,67 @@ def assign_interval(year: int) -> tuple[int, int, str] | None:
             return s, e, f"{s} to {e}"
     return None
 
+def estimate_years_for(start: int, end: int, available: list[int]) -> list[int]:
+    """WHO estimate years inside the period, else the latest year before it."""
+    inside = [year for year in available if start <= year <= end]
+    if inside:
+        return inside
+    earlier = [year for year in available if year < start]
+    return [max(earlier)] if earlier else []
+
+
+def burden_for_years(who: pd.DataFrame, start: int, end: int) -> pd.DataFrame:
+    """Mean annual DALYs per country and cause for any year range."""
+    available = sorted(int(year) for year in who["year"].unique())
+    years = estimate_years_for(int(start), int(end), available)
+    columns = ["country_iso3", "cause_code", "cause_name", "burden_dalys", "burden_rate_per_100k",
+               "burden_years", "metric_kind", "metric_label"]
+    if not years:
+        return pd.DataFrame(columns=columns)
+    chosen = who[who["year"].isin(years)]
+    summary = (chosen.groupby(["country_iso3", "cause_code", "cause_name"], as_index=False)
+               .agg(burden_dalys=("dalys", "mean"), burden_rate_per_100k=("daly_rate_per_100k", "mean")))
+    label = ", ".join(str(year) for year in years)
+    summary["burden_years"] = label
+    summary["metric_kind"] = "absolute_dalys"
+    summary["metric_label"] = f"DALYs per year, WHO Global Health Estimates ({label})"
+    return summary[columns]
+
+
+def burden_by_interval(who: pd.DataFrame) -> pd.DataFrame:
+    """Mean annual DALYs per country, cause and fixed analysis interval."""
+    frames = [burden_for_years(who, start, end).assign(interval_start=start) for start, end in _INTERVALS]
+    return pd.concat([frame for frame in frames if not frame.empty], ignore_index=True)
+
+
+def scope_for_years(ct: pd.DataFrame, who: pd.DataFrame, cause_code: str, start: int, end: int) -> pd.DataFrame:
+    """Country cohort for one disease over an arbitrary inclusive year range.
+
+    ``ct`` is the clean ClinicalTrials.gov table (country, year, cause,
+    trial_sites); ``who`` the clean WHO table. Shares and the Equity Ratio are
+    calculated over countries with measured burden, as in the dashboard.
+    Activity is summed across the years; each study counts once, in its year.
+    """
+    start, end = int(start), int(end)
+    trials = ct[(ct["cause_code"] == cause_code) & ct["year"].between(start, end)
+                & ct["country_iso3"].isin(VALID_COUNTRY_ISO3)]
+    trials = trials.groupby("country_iso3")["trial_sites"].sum().rename("trial_sites")
+    burden = burden_for_years(who[who["cause_code"] == cause_code], start, end)
+    burden = burden[burden["country_iso3"].isin(VALID_COUNTRY_ISO3)].set_index("country_iso3")
+    out = burden.join(trials, how="outer").reset_index()
+    out["trial_sites"] = out["trial_sites"].fillna(0.0)
+    out["cause_code"] = cause_code
+    out["year_start"], out["year_end"] = start, end
+    observed = out["burden_dalys"].fillna(0) > 0
+    trial_total = out.loc[observed, "trial_sites"].sum()
+    burden_total = out.loc[observed, "burden_dalys"].sum()
+    out["trial_share"] = np.where(observed & (trial_total > 0), out["trial_sites"] / max(trial_total, 1e-12), 0.0)
+    out["burden_share"] = np.where(observed, out["burden_dalys"].fillna(0) / max(burden_total, 1e-12), 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out["equity_ratio"] = np.where(out["burden_share"] > 0, out["trial_share"] / out["burden_share"], np.nan)
+    return out.sort_values("country_iso3").reset_index(drop=True)
+
+
 # ------------------------ Pipeline ------------------------
 
 def run_indices() -> pd.DataFrame:
@@ -138,13 +201,10 @@ def run_indices() -> pd.DataFrame:
     who = who[who["country_iso3"].astype(str).isin(VALID_COUNTRY_ISO3)].copy()
     ct = ct[ct["country_iso3"].astype(str).isin(VALID_COUNTRY_ISO3)].copy()
 
-    # ---- WHO: country×cause (no year). Keep original burden column; compute standardized.
+    # ---- WHO: country×cause×estimate year -> one burden value per period.
     for c in ["country_iso3", "cause_code", "cause_name"]:
         who[c] = who[c].astype(str)
-    who["burden_dalys"] = pd.to_numeric(who["value"], errors="coerce")
-    who["metric_kind"]  = "rate_per_100k"
-    who["metric_label"] = who.get("metric", "DALYs per 100k population")
-    who = who[["country_iso3","cause_code","cause_name","burden_dalys","metric_kind","metric_label"]]
+    who = burden_by_interval(who)
 
     # ---- CT.gov: clean, map to intervals, aggregate across phases
     for c in ["country_iso3", "cause_code", "cause_name", "phase"]:
@@ -163,7 +223,7 @@ def run_indices() -> pd.DataFrame:
         out = pd.DataFrame(columns=[
             "country_iso3","interval_start","interval_end","interval_label",
             "cause_code","cause_name",
-            "trial_sites","burden_dalys",
+            "trial_sites","burden_dalys","burden_rate_per_100k","burden_years",
             "trial_share","burden_share","equity_ratio",
             "trial_density_per_k_dalys",
             "gini_er_weighted","theil_T",
@@ -200,7 +260,7 @@ def run_indices() -> pd.DataFrame:
         out = pd.DataFrame(columns=[
             "country_iso3","interval_start","interval_end","interval_label",
             "cause_code","cause_name",
-            "trial_sites","burden_dalys",
+            "trial_sites","burden_dalys","burden_rate_per_100k","burden_years",
             "trial_share","burden_share","equity_ratio",
             "trial_density_per_k_dalys",
             "gini_er_weighted","theil_T",
@@ -230,7 +290,7 @@ def run_indices() -> pd.DataFrame:
 
     # ---- Merge WHO & CT aggregates onto the universe (keep originals as-is)
     df = (universe
-          .merge(who, on=["country_iso3","cause_code","cause_name"], how="left")
+          .merge(who, on=["country_iso3","cause_code","cause_name","interval_start"], how="left")
           .merge(ct_int, on=["country_iso3","cause_code","cause_name","interval_start","interval_end","interval_label"], how="left")
           .copy())
 
@@ -292,7 +352,7 @@ def run_indices() -> pd.DataFrame:
     out_cols = [
         "country_iso3","interval_start","interval_end","interval_label",
         "cause_code","cause_name",
-        "trial_sites","burden_dalys",
+        "trial_sites","burden_dalys","burden_rate_per_100k","burden_years",
         "trial_share","burden_share","equity_ratio",
         "trial_density_per_k_dalys",
         "gini_er_weighted","theil_T",

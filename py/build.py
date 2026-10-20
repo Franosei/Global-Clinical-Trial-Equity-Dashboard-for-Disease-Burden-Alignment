@@ -11,7 +11,8 @@ import sys
 
 STEPS = [
     ("global_health_sources", "Fetch and harmonise WHO disease burden"),
-    ("ctgov", "Fetch ClinicalTrials.gov trial sites"),
+    ("ctgov", "Fetch ClinicalTrials.gov trial sites and facilities"),
+    ("resources", "Fetch World Bank price levels and infrastructure"),
     ("indices", "Compute dashboard-ready equity indices"),
 ]
 

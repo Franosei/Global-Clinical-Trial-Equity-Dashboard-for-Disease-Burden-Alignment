@@ -7,3 +7,4 @@ pycountry
 dash>=2.18,<4
 plotly>=5.24,<7
 waitress>=3,<4
+openpyxl>=3.1

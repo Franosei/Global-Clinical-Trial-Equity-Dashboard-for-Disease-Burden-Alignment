@@ -189,4 +189,13 @@ def forecast_trial_sites(
     actual = history.rename(columns={"trial_sites": "estimate"}).assign(
         lower=lambda d: d["estimate"], upper=lambda d: d["estimate"], kind="Actual"
     )
-    return pd.concat([actual, forecast], ignore_index=True)
+    result = pd.concat([actual, forecast], ignore_index=True)
+    # Fitted model, kept for the methods explanation and for auditing.
+    result.attrs["model"] = {
+        "first_year": int(x.min()), "last_year": int(x.max()), "n_years": int(len(x)),
+        "intercept": float(intercept), "slope": float(slope),
+        "residual_sd": float(np.std(residuals, ddof=2)) if len(x) > 2 else float("nan"),
+        "r_squared": float(1 - residuals.var() / y.var()) if y.var() > 0 else float("nan"),
+        "draws": int(draws), "seed": int(seed),
+    }
+    return result
