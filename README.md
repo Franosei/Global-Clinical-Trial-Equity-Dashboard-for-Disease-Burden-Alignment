@@ -26,6 +26,8 @@ The dashboard provides an executive overview, a country-level analytical table, 
 
 ## Data sources
 
+![Data and sources chapter for stroke: coverage counts, the provenance of each data source with its timestamp, and the country-level analytical table](docs/images/data-and-sources.png)
+
 ### Clinical trial activity
 
 Trial records are retrieved from the [ClinicalTrials.gov API version 2](https://clinicaltrials.gov/data-api/api). The source is normally refreshed on weekdays. The application records both the upstream data timestamp and the time at which the local analytical snapshot was published.
@@ -81,6 +83,10 @@ Burden estimates are published less frequently than trial registrations. They ar
 
 ## Core measures
 
+The dashboard's Methods chapter sets out every measure and model in full, with formulas and a worked example on the selected disease and years.
+
+![Methods chapter: a contents list beside the first section, notation and analytical frame, with the symbols used throughout](docs/images/methods.png)
+
 ### Equity Ratio
 
 For country `c`, the Equity Ratio is:
@@ -123,11 +129,15 @@ This accounts for the fact that adding activity changes both the country numerat
 
 ## Forecasting approach
 
+![Forecast chapter for stroke: observed global placements from 2018 to 2025 with a dashed three-year projection and its shaded 80% interval, beside a readout of 1,056 placements projected for 2028](docs/images/forecast.png)
+
 The forecast models annual global study-country activity for the selected disease. It fits a log-linear trend to the most recent complete years and uses residual bootstrap sampling to produce an 80 per cent uncertainty interval.
 
 The model is deliberately transparent. It is suitable for directional portfolio discussion, but it does not account for protocol pipelines, regulatory approvals, sponsor strategy, competitive trials, recruitment capacity or unexpected changes in registration practice. It should not be described as a forecast of enrolment or study success.
 
 ## Scenario planning
+
+![Scenarios chapter for stroke: 250 placements added under the equity gap rule, the projected alignment and Theil divergence with Monte Carlo ranges, where the placements go, and each country's equity ratio before and after](docs/images/scenarios.png)
 
 The scenario laboratory allocates a user-defined number of additional sites using one of three rules:
 
@@ -142,6 +152,8 @@ These scenarios are planning aids. A real site strategy would also need evidence
 ## Resource planner
 
 The equity measures say how many additional study placements a country needs. A placement does not have to mean a new site. A facility that has already run studies of the disease can host more, and a new site, once established, can host several studies. The resource planner turns a budget into a plan that uses proven capacity first and opens new sites only where that buys more alignment per dollar.
+
+![Resource plan chapter for stroke: the planner's cost inputs, then the results for a US$5 million budget, with alignment rising from 37.6 to 49.6 using 625 existing facilities and no new sites, a saving of US$3.20 million against opening one site per placement, the spend frontier and where the placements go](docs/images/resource-plan-results.png)
 
 ### What is measured
 
