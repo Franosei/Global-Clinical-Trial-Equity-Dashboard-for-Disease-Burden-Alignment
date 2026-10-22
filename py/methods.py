@@ -47,13 +47,24 @@ Both $p$ and $b$ are probability distributions over the same countries ($\sum_c 
 Countries without a WHO burden estimate are excluded from the cohort, because their share of burden is unknown rather than zero.
 """),
         ("data", "2. Data construction", r"""
-**Trial activity.** Records come from the ClinicalTrials.gov API v2. A study is assigned to a disease when any registered condition, condition browse leaf or MeSH term contains one of the disease's synonyms; synonyms of three characters or fewer (for example *TB*, *DM*) must match as whole words. A study can count towards more than one disease. Each study is dated by its **start date**, falling back to the primary completion date and then the first-posted date. Location country names are mapped to ISO 3166 codes; regional or unmappable labels are dropped.
+**Trial activity.** Records come from the ClinicalTrials.gov API v2. The dashboard covers 33 diseases in nine groups. A study is assigned to a disease when any registered condition or MeSH term contains one of the disease's curated terms. Three rules keep the matching precise:
+
+- Every term must start at a word boundary, so *renal* does not match *adrenal*.
+- A term whose last word has three characters or fewer must also end at one, so *hepatitis a* does not match *hepatitis, alcoholic* and *DM* does not match inside another word.
+- Each disease can list phrases that are removed before matching, because they contain a disease term but describe something else (*respiratory depression*, *pulmonary hypertension*, *diabetes insipidus*).
+
+Studies that mention COVID-19 are not counted as lower respiratory infections, because WHO estimates COVID-19 burden separately. A study can count towards more than one disease. Each study is dated by its **start date**, falling back to the primary completion date and then the first-posted date. Location country names are mapped to ISO 3166 codes; regional or unmappable labels are dropped.
 
 The activity unit is the **unique study–country pair**: a study with ten facilities in Brazil and two in Kenya adds 1 to Brazil and 1 to Kenya. It measures *where research is placed*, not how many facilities or participants are involved. For a year range $[y_0, y_1]$:
 
 $$s_c = \#\{\text{studies with start year in } [y_0,y_1] \text{ and at least one site in } c\}$$
 
-**Disease burden.** WHO Global Health Estimates (GHE 2023 release) give absolute DALYs by country and cause for estimate years 2000, 2010, 2015 and 2019 to 2023. Each disease maps to one GHE cause code. For a selected range, burden is the mean of the estimate years inside it:
+**Disease burden.** WHO Global Health Estimates (GHE 2023 release) give absolute DALYs by country and cause for estimate years 2000, 2010, 2015 and 2019 to 2023. Each disease maps to one GHE cause code, except two composites that sum separate WHO causes:
+
+- **Viral hepatitis:** acute hepatitis A, B, C and E, plus liver cancer and cirrhosis caused by hepatitis B and C. Most of the burden is chronic and WHO records it under those consequences.
+- **Neglected tropical diseases:** the WHO neglected tropical diseases that GHE estimates separately.
+
+Because viral hepatitis includes part of liver cancer and cirrhosis, those diseases overlap by design; each disease is analysed on its own. For a selected range, burden is the mean of the estimate years inside it:
 
 $$d_c = \frac{1}{|Y|} \sum_{t \in Y} \text{DALY}_{c,t}, \qquad Y = \{t \in \text{GHE years} : y_0 \le t \le y_1\}$$
 

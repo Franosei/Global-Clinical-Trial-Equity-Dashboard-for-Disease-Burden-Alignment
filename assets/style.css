@@ -22,8 +22,10 @@ body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(
 /* ---------------------------------------------------------------- control bar */
 /* Pinned to the top so disease, years and chapters are always in reach. */
 .control-bar { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 28px;
-  height: var(--bar-h); background: var(--paper); border-bottom: 1px solid var(--ink);
-  box-shadow: 0 0 0 100vmax var(--paper); clip-path: inset(0 -100vmax); }
+  height: var(--bar-h); background: var(--paper); border-bottom: 1px solid var(--ink); }
+/* Full-width paper behind the bar, without clipping the dropdown list below it. */
+.control-bar::before { content: ''; position: absolute; top: 0; bottom: -1px; left: -100vmax; right: -100vmax;
+  background: var(--paper); border-bottom: 1px solid var(--ink); z-index: -1; }
 .bar-brand { font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
 .bar-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .bar-label { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink2); }
@@ -231,3 +233,13 @@ body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(
   .chapter { font-size: 13px !important; }
   .fig, .aside, .table-block, .methods-section { padding: 14px 14px 8px; }
 }
+
+/* Dropdown rows. Dash renders long option lists virtually, with these classes. */
+.VirtualizedSelectOption { display: flex; align-items: center; padding: 0 12px; font-family: var(--sans); font-size: 14px;
+  color: var(--ink); background: var(--card); cursor: pointer; }
+.VirtualizedSelectFocusedOption { background: var(--wash); }
+.VirtualizedSelectSelectedOption { color: var(--vermilion); font-weight: 500; }
+/* Disease menu group headings (disabled options). */
+.VirtualizedSelectDisabledOption { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; color: var(--vermilion);
+  background: var(--paper); cursor: default; align-items: flex-end; padding-bottom: 6px; border-top: 1px solid var(--line); opacity: 1 !important; }
+.VirtualizedSelectDisabledOption:first-child { border-top: 0; }

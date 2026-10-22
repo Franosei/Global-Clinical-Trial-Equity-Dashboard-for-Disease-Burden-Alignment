@@ -32,7 +32,36 @@ Trial records are retrieved from the [ClinicalTrials.gov API version 2](https://
 
 The historical extraction uses a unique NCT study and country combination as its activity unit. A study listed in three countries contributes one activity unit to each country. Multiple facilities belonging to the same study within one country are counted once. For that reason, the measure should be interpreted as registered study-country activity, not as a literal count of individual research facilities.
 
-Conditions are assigned to disease groups using a controlled set of disease names and synonyms. A study can contribute to more than one disease group when its registered conditions genuinely match more than one group. Short acronyms are matched as complete terms to reduce false classifications.
+Conditions are assigned to diseases using a curated list of terms for each disease. Three rules keep the matching precise:
+
+- A term must start at a word boundary.
+- A term whose last word is three characters or fewer must also end at one.
+- Each disease can list phrases removed before matching, such as *respiratory depression* for depression or *pulmonary hypertension* for hypertensive heart disease.
+
+A study can count towards more than one disease when its registered conditions genuinely match more than one. The matching rules are tested against real condition labels in `tests/test_matching.py`.
+
+### Diseases covered
+
+Thirty-three diseases are covered, in nine groups. They were chosen to include the leading causes of disease burden, conditions where research is concentrated in high-income countries, and conditions WHO identifies as needing attention.
+
+| Group | Diseases |
+| --- | --- |
+| Infectious and parasitic | HIV/AIDS, tuberculosis, malaria, lower respiratory infections, diarrhoeal diseases, viral hepatitis, meningitis, measles, neglected tropical diseases |
+| Maternal and neonatal | Maternal conditions, neonatal conditions |
+| Cancers | Lung, breast, cervical, colorectal, liver, stomach and prostate cancer |
+| Cardiovascular and metabolic | Ischaemic heart disease, stroke, hypertensive heart disease, diabetes, chronic kidney disease |
+| Respiratory | COPD, asthma |
+| Mental and neurological | Depressive disorders, anxiety disorders, Alzheimer's disease and dementias |
+| Digestive | Cirrhosis of the liver |
+| Injuries | Road traffic injuries, self-harm |
+| Inherited and congenital | Sickle cell disease, congenital anomalies |
+
+Two diseases combine several WHO causes:
+
+- **Viral hepatitis** sums acute hepatitis with liver cancer and cirrhosis caused by hepatitis B and C, where most of its burden falls.
+- **Neglected tropical diseases** sums the WHO neglected tropical diseases that are estimated separately, including dengue, leishmaniasis, schistosomiasis, Chagas disease, rabies, trachoma, leprosy and intestinal worms.
+
+Trials for hypertensive heart disease are matched on hypertension generally, because that is how blood-pressure research is registered.
 
 The extraction also keeps facility-level detail (facility name, city, coordinates) in `data/clean/ctgov_facilities.parquet`. About a third of listings are anonymised by sponsors ("Research Site", "GSK Investigational Site", a call-centre notice). They are detected by name pattern, or because one name is listed in several cities within the same study, and are excluded from facility-level capacity measures.
 

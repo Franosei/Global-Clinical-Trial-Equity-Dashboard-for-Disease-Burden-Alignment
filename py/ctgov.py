@@ -23,6 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Iterable, Set
 from datetime import datetime, timezone
+from functools import lru_cache
 import re
 import unicodedata
 import yaml
@@ -35,9 +36,9 @@ import pycountry
 
 # IMPORTANT: use absolute import as requested
 try:
-    from .global_health_sources import DISEASE_PATTERNS, norm_text
+    from .global_health_sources import DISEASE_PATTERNS, EXCLUDE_STUDY_IF, EXCLUDED_PHRASES, norm_text
 except ImportError:  # Supports direct execution: python py/ctgov.py
-    from global_health_sources import DISEASE_PATTERNS, norm_text
+    from global_health_sources import DISEASE_PATTERNS, EXCLUDE_STUDY_IF, EXCLUDED_PHRASES, norm_text
 
 # Paths & Config ------------------------
 
@@ -232,19 +233,50 @@ def extract_condition_texts(study: dict) -> List[str]:
     # clean
     return [t for t in texts if t]
 
-def match_condition_to_cause(conditions: List[str], cause_keywords: List[str]) -> bool:
-    if not conditions:
-        return False
-    cond_n = [norm_text(c) for c in conditions if c]
-    needles = [norm_text(k) for k in cause_keywords]
-    def matches(condition: str, needle: str) -> bool:
-        if not needle:
-            return False
-        if len(needle) <= 3:
-            return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", condition) is not None
-        return needle in condition
+@lru_cache(maxsize=None)
+def _term_pattern(term: str) -> re.Pattern:
+    """A disease term as a regular expression over normalised text.
 
-    return any(matches(condition, needle) for condition in cond_n for needle in needles)
+    The term must start at a word boundary, so "renal" does not match
+    "adrenal". If its last word has three characters or fewer it must also end
+    at one, so "hepatitis a" does not match "hepatitis alcoholic" and "dm" does
+    not match inside a longer word. Longer terms may run on, so "alzheimer"
+    matches "alzheimers" and "dementia" matches "dementias".
+    """
+    needle = norm_text(term)
+    pattern = r"(?<![a-z0-9])" + re.escape(needle)
+    if len(needle.split(" ")[-1]) <= 3:
+        pattern += r"(?![a-z0-9])"
+    return re.compile(pattern)
+
+
+def match_condition_to_cause(
+    conditions: List[str],
+    cause_keywords: List[str],
+    excluded_phrases: Iterable[str] = (),
+    exclude_study_if: Iterable[str] = (),
+) -> bool:
+    """True when any condition text matches a disease term.
+
+    ``excluded_phrases`` are removed from each condition first (for example
+    "diabetes insipidus" before matching "diabetes"). If any condition mentions
+    an ``exclude_study_if`` term the study does not count for the disease.
+    """
+    texts = [norm_text(c) for c in conditions if c]
+    if not texts:
+        return False
+    if any(_term_pattern(term).search(text) for term in exclude_study_if for text in texts):
+        return False
+    for phrase in excluded_phrases:
+        # MeSH headings invert word order ("Hypertension, Pulmonary"), so the
+        # inverted form of each phrase is removed too.
+        words = norm_text(phrase).split(" ")
+        variants = {" ".join(words), " ".join(words[-1:] + words[:-1])}
+        for variant in variants:
+            pattern = _term_pattern(variant)
+            texts = [pattern.sub(" ", text) for text in texts]
+    terms = [term for term in cause_keywords if norm_text(term)]
+    return any(_term_pattern(term).search(text) for term in terms for text in texts)
 
 def _ascii(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
@@ -304,7 +336,7 @@ def unique_tokens_for_cause(keywords: List[str], cause_name: str, max_tokens: in
     Build a small set of unique, useful tokens to query individually with query.cond.
     We include the cause_name and the raw keywords, deduped case-insensitively.
     """
-    useful_acronyms = {"tb", "hiv", "aids", "copd", "ckd", "ihd", "lri", "rti", "cbvd"}
+    useful_acronyms = {"tb", "hiv", "copd", "ckd", "ihd", "lri", "cbvd", "hbv", "hcv", "hcc", "crc"}
     toks = [
         t.strip() for t in (keywords + [cause_name])
         if t and t.strip() and (len(norm_text(t)) >= 4 or norm_text(t) in useful_acronyms)
@@ -340,6 +372,10 @@ def _country_iso3_cached(label: Optional[str]) -> Optional[str]:
     return _ISO3_CACHE[label]
 
 
+# Curated terms are short lists, so all of them are searched (the largest list,
+# neglected tropical diseases, has 26 named conditions).
+QUERY_TERMS_PER_DISEASE = 40
+
 FACILITY_COLUMNS = [
     "nct_id", "cause_code", "year", "phase", "country_iso3", "facility_key",
     "facility", "city", "lat", "lon", "anonymised", "location_status",
@@ -370,12 +406,22 @@ def classify_facilities(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.drop_duplicates(subset=["nct_id", "cause_code", "facility_key"])
 
 
-def _publish_facilities(rows: List[tuple], selected: Set[str]) -> pd.DataFrame:
-    """Write one row per study, disease and facility, merging partial refreshes."""
-    frame = classify_facilities(pd.DataFrame(rows, columns=FACILITY_COLUMNS))
+def _compact(frame: pd.DataFrame) -> pd.DataFrame:
+    """Typed, memory-light facility rows (repeated text stored as categories)."""
+    frame = frame.copy()
     frame["year"] = frame["year"].astype(int)
     for column in ("lat", "lon", "enrollment"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    for column in ("cause_code", "phase", "country_iso3", "city", "location_status", "overall_status"):
+        frame[column] = frame[column].astype("category")
+    return frame
+
+
+def _publish_facilities(frame: pd.DataFrame, selected: Set[str]) -> pd.DataFrame:
+    """Write one row per study, disease and facility, merging partial refreshes."""
+    frame = frame.copy()
+    for column in ("cause_code", "phase", "country_iso3", "city", "location_status", "overall_status"):
+        frame[column] = frame[column].astype(str).replace({"nan": None, "None": None})
     if selected != set(DISEASE_PATTERNS) and OUT_FACILITIES.exists():
         current = pd.read_parquet(OUT_FACILITIES)
         frame = pd.concat([current[~current["cause_code"].isin(selected)], frame], ignore_index=True)
@@ -389,8 +435,8 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
     """Pull all configured diseases, or only ``cause_codes``, from the live API."""
     CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 
-    site_rows: List[dict] = []
-    facility_rows: List[tuple] = []
+    site_frames: List[pd.DataFrame] = []
+    facility_frames: List[pd.DataFrame] = []
     selected = set(cause_codes or DISEASE_PATTERNS.keys())
     unknown = selected.difference(DISEASE_PATTERNS)
     if unknown:
@@ -399,7 +445,12 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
     for cause_code, (cause_name, keywords) in DISEASE_PATTERNS.items():
         if cause_code not in selected:
             continue
-        tokens = unique_tokens_for_cause(keywords, cause_name, max_tokens=10)
+        # Every curated term is searched; matching then filters precisely.
+        tokens = unique_tokens_for_cause(keywords, cause_name, max_tokens=QUERY_TERMS_PER_DISEASE)
+        excluded_phrases = EXCLUDED_PHRASES.get(cause_code, [])
+        exclude_study_if = EXCLUDE_STUDY_IF.get(cause_code, [])
+        site_rows: List[dict] = []
+        facility_rows: List[tuple] = []
         print(f"[CT.gov v2] {cause_code} :: tokens -> {', '.join(tokens)}")
         # Synonym queries return overlapping studies; each study is processed
         # once per disease (both outputs are de-duplicated on nct_id anyway).
@@ -422,7 +473,8 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
 
                     # Match disease using conditions + browse leaves + MeSH (+ derived fallback)
                     conditions = extract_condition_texts(s)
-                    if not match_condition_to_cause(conditions, keywords + [cause_name]):
+                    if not match_condition_to_cause(conditions, keywords + [cause_name],
+                                                    excluded_phrases, exclude_study_if):
                         continue
 
                     # Pick a year per config rule
@@ -459,7 +511,16 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
                             overall_status, enrollment,
                         ))
 
-    if not site_rows:
+        # Reduce each disease to compact frames before the next one, so memory
+        # stays flat however many diseases are pulled.
+        if site_rows:
+            site_frames.append(pd.DataFrame(site_rows).drop_duplicates(
+                subset=["nct_id", "country_iso3", "year", "cause_code"]))
+            facility_frames.append(_compact(classify_facilities(pd.DataFrame(facility_rows, columns=FACILITY_COLUMNS))))
+        print(f"[CT.gov v2] {cause_code} :: {len(seen_nct):,} studies screened, "
+              f"{site_frames[-1]['nct_id'].nunique() if site_rows else 0:,} matched")
+
+    if not site_frames:
         print("[WARN] No CT.gov v2 rows collected.")
         # still write an empty parquet with the right schema
         empty = pd.DataFrame(columns=["country_iso3","year","cause_code","cause_name","phase","trial_sites"])
@@ -468,9 +529,7 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
         return empty
 
     # 1) De-duplicate unique trial per country/year/cause
-    events = (pd.DataFrame(site_rows)
-                .drop_duplicates(subset=["nct_id", "country_iso3", "year", "cause_code"])
-                .reset_index(drop=True))
+    events = pd.concat(site_frames, ignore_index=True)
 
     # 2) Aggregate to counts (one row per country-year-disease-phase)
     agg = (events.groupby(["country_iso3", "year", "cause_code", "cause_name", "phase"], as_index=False)
@@ -486,7 +545,7 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
     agg["phase"] = agg["phase"].astype(str)
     agg["trial_sites"] = agg["trial_sites"].astype(int)
 
-    _publish_facilities(facility_rows, selected)
+    _publish_facilities(pd.concat(facility_frames, ignore_index=True), selected)
 
     if selected == set(DISEASE_PATTERNS):
         published = agg

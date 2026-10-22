@@ -27,7 +27,7 @@ from py.analytics import (
     sites_to_parity,
     theil_index,
 )
-from py.global_health_sources import DISEASE_PATTERNS
+from py.global_health_sources import DISEASE_GROUPS, DISEASE_PATTERNS
 from py.indices import scope_for_years
 from py.live import read_status, refresh
 from py.methods import display_math, sections as methods_sections
@@ -80,11 +80,18 @@ MONO = "'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace"
 # warm neutral at parity, Prussian above.
 ER_SCALE = [[0.0, VERMILION], [0.25, "#E7A389"], [0.5, "#E6E0D3"], [0.75, "#9DB2D1"], [1.0, PRUSSIAN]]
 BAND_COLOURS = [VERMILION, "#E7A389", "#CBC4B4", "#9DB2D1", PRUSSIAN]
+# How each disease reads mid-sentence in the headline ("...the world's ___ burden...").
 SENTENCE_NAMES = {
-    "IHD": "ischaemic heart disease", "STROKE": "stroke", "COPD": "COPD",
-    "LRI": "lower respiratory infection", "DIAB": "diabetes", "NEON": "neonatal",
-    "LUNG_CA": "lung cancer", "ALZH": "Alzheimer's and dementia", "DIARR": "diarrhoeal disease",
-    "KIDNEY": "kidney disease", "TB": "tuberculosis", "HIV": "HIV/AIDS", "RTI": "road injury",
+    "HIV": "HIV/AIDS", "TB": "tuberculosis", "MALARIA": "malaria", "LRI": "lower respiratory infection",
+    "DIARR": "diarrhoeal disease", "HEPATITIS": "viral hepatitis", "MENING": "meningitis", "MEASLES": "measles",
+    "NTD": "neglected tropical disease", "MATERNAL": "maternal", "NEON": "neonatal",
+    "LUNG_CA": "lung cancer", "BREAST_CA": "breast cancer", "CERVIX_CA": "cervical cancer",
+    "COLORECTAL_CA": "colorectal cancer", "LIVER_CA": "liver cancer", "STOMACH_CA": "stomach cancer",
+    "PROSTATE_CA": "prostate cancer", "IHD": "ischaemic heart disease", "STROKE": "stroke",
+    "HHD": "hypertensive heart disease", "DIAB": "diabetes", "KIDNEY": "kidney disease", "COPD": "COPD",
+    "ASTHMA": "asthma", "DEPRESSION": "depression", "ANXIETY": "anxiety disorder",
+    "ALZH": "Alzheimer's and dementia", "CIRRHOSIS": "liver cirrhosis", "RTI": "road injury",
+    "SELF_HARM": "self-harm", "SICKLE": "sickle cell disease", "CONGENITAL": "congenital anomaly",
 }
 
 def _snapshot_token() -> str:
@@ -345,9 +352,12 @@ def methods_tab_content() -> html.Div:
     return html.Div([contents, html.Div(blocks + [example], className="methods-body")], className="methods-layout")
 
 
-cause_options = sorted(({"label": name, "value": code} for code, (name, _) in DISEASE_PATTERNS.items()),
-                       key=lambda option: option["label"])
-initial_cause = cause_options[0]["value"]
+# The disease menu is grouped: a disabled heading row precedes each group.
+cause_options = []
+for group_name, group_causes in DISEASE_GROUPS:
+    cause_options.append({"label": group_name.upper(), "value": f"group:{group_name}", "disabled": True})
+    cause_options.extend({"label": DISEASE_PATTERNS[code][0], "value": code} for code in group_causes)
+initial_cause = DISEASE_GROUPS[0][1][0]
 # Five-yearly ticks plus the current year, dropping ticks too close to it to read.
 year_marks = {year: str(year) for year in range(FIRST_YEAR, CURRENT_YEAR - 2, 5)}
 year_marks[CURRENT_YEAR] = str(CURRENT_YEAR)
@@ -365,7 +375,7 @@ app.layout = html.Div(
             html.Div([
                 html.Label("Disease", htmlFor="cause", className="bar-label"),
                 dcc.Dropdown(id="cause", options=cause_options, value=initial_cause, clearable=False, searchable=True,
-                             className="bar-select"),
+                             maxHeight=460, optionHeight=34, placeholder="Search diseases", className="bar-select"),
             ], className="bar-field bar-disease"),
             html.Div([
                 html.Div([html.Span("Years", className="bar-label"), html.Span(id="years-label", className="years-label")],
