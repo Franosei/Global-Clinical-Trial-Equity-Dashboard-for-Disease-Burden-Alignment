@@ -91,6 +91,10 @@ Equity Ratio(c) = trial activity share(c) / burden indicator share(c)
 
 An Equity Ratio of 1 indicates proportional alignment within the selected analytical cohort. A value below 1 indicates less registered activity than expected from the burden reference. A value above 1 indicates greater registered activity than expected.
 
+![Overview chapter for stroke, 2021 to 2025: the key measures, a world map of the Equity Ratio with under-represented countries in vermilion and over-represented countries in blue, and the countries with the largest gaps, led by India, China and Indonesia](docs/images/overview-map.png)
+
+*Stroke, 2021 to 2025. Most of Africa, South Asia and South-East Asia host fewer trials than their share of stroke burden implies, while North America, Western Europe and Australia host more.*
+
 The ratio is descriptive. It does not measure trial quality, recruitment performance, regulatory readiness, health-system capacity or the appropriateness of a particular site.
 
 ### Alignment score
