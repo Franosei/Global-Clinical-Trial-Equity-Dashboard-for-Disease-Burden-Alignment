@@ -32,7 +32,22 @@ ctgov:
   base_url: "https://clinicaltrials.gov/api/v2/"
   page_size: 1000
   date_rule: "start"
+  # ClinicalTrials.gov reserves "clinical trial" for interventional studies.
+  # Observational studies and expanded-access records are deliberately excluded
+  # from the equity numerator and facility-capacity model.
+  study_types: ["INTERVENTIONAL"]
+  # A current registry record can omit countries whose locations were removed
+  # after a study began. Keep those countries in historical study-country
+  # activity, but never infer facility-level capacity from them.
+  include_removed_countries: true
   site_fields: ["locations", "overallStatus", "phase", "sponsors"]
+
+# Manual validation is deliberately separate from matcher unit tests. Set this
+# true only after an independent reviewer has completed the blinded sample and
+# the generated disease-matching report has been checked and approved.
+disease_matching_review:
+  independently_verified: false
+  min_reviewed_per_disease: 10
 
 world_bank:
   base_url: "https://api.worldbank.org/v2/"
@@ -46,18 +61,21 @@ world_bank:
 # dashboard. They are starting points, not estimates for any specific protocol.
 planner:
   reference_country: USA
-  # Widely cited Tufts CSDD figure for activating one site for one study
-  # (approx. US$25,000; dated, US prices). Replace with your own quotes.
+  # Set true only after replacing the defaults below with protocol-specific,
+  # finance-approved estimates. The validation command reports operational
+  # planning as provisional while this remains false.
+  cost_inputs_verified: false
+  # Illustrative placeholders only: replace with protocol-specific estimates.
   study_startup_cost: 25000
   # One-time cost to qualify and equip a facility with no research history for
   # this disease. No robust public benchmark exists: set from your own data.
   new_site_cost: 100000
   budget: 5000000
-  # A facility counts as existing capacity if it started a study of this
-  # disease in the selected years or this many earlier windows of equal length.
+  # A facility is eligible for the historical-activity proxy if it listed a
+  # study in the selected years or this many earlier windows of equal length.
   recency_windows: 1
-  # New-site capacity is measured from facilities in the same country when at
-  # least this many named facilities exist, else the income group, else global.
+  # Assumed new-site throughput uses facilities in the same country when at
+  # least this many have history, else the income group, else global.
   min_facilities_for_benchmark: 5
 
 gbd_ihme:

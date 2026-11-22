@@ -119,11 +119,12 @@ def simulate_allocation(
     draws: int = 500,
     seed: int = 42,
 ) -> SimulationSummary:
-    """Monte Carlo scenario uncertainty from placement and burden variation.
+    """Assumption sensitivity from placement and burden variation.
 
     Burden is perturbed with a conservative 10% log-normal coefficient of
     variation. New sites are sampled from the selected strategy's allocation
-    probabilities. This is scenario uncertainty, not a causal prediction.
+    probabilities. The resulting quantiles are sensitivity ranges, not
+    confidence intervals, prediction intervals or a causal prediction.
     """
     deterministic = allocate_sites(data, extra_sites, strategy)
     current = np.nan_to_num(data["trial_sites"].to_numpy(float), nan=0.0)
@@ -157,38 +158,109 @@ def forecast_trial_sites(
     draws: int = 1000,
     seed: int = 42,
 ) -> pd.DataFrame:
-    """Log-linear global site forecast with residual-bootstrap intervals."""
-    history = (
+    """Governed forecast selected against a last-value benchmark.
+
+    The candidate log-linear trend is used only when rolling-origin backtests
+    beat a last-observation forecast. Prediction intervals use out-of-sample
+    log errors for the selected model when at least five are available. This is
+    deliberately conservative: a trend that cannot beat persistence is not
+    presented as evidence of growth or decline.
+    """
+    observed = (
         annual_data.loc[annual_data["cause_code"] == cause_code]
         .groupby("year", as_index=False)["trial_sites"]
         .sum()
         .sort_values("year")
     )
     current_year = datetime.now(timezone.utc).year
-    history = history[history["year"] < current_year].tail(max(int(lookback), 4))
+    observed = observed[observed["year"] < current_year]
+    if observed.empty:
+        return pd.DataFrame(columns=["year", "estimate", "lower", "upper", "kind"])
+    # Missing calendar years mean zero global activity, not an omitted time
+    # point. Keeping a regular index also makes rolling validation honest.
+    full_years = np.arange(int(observed["year"].min()), int(observed["year"].max()) + 1)
+    series = observed.set_index("year")["trial_sites"].reindex(full_years, fill_value=0).astype(float)
+    history = series.tail(max(int(lookback), 4))
     if len(history) < 4:
         return pd.DataFrame(columns=["year", "estimate", "lower", "upper", "kind"])
 
-    x = history["year"].to_numpy(float)
-    y = np.log1p(history["trial_sites"].to_numpy(float))
+    x = history.index.to_numpy(float)
+    y = np.log1p(history.to_numpy(float))
     slope, intercept = np.polyfit(x - x.min(), y, 1)
     fitted = intercept + slope * (x - x.min())
     residuals = y - fitted
     future_years = np.arange(int(x.max()) + 1, int(x.max()) + horizon + 1)
-    future_base = intercept + slope * (future_years - x.min())
+    loglinear_point = np.maximum(np.expm1(intercept + slope * (future_years - x.min())), 0)
+    naive_point = np.repeat(float(history.iloc[-1]), len(future_years))
+
+    # Rolling-origin evaluation over the complete available series. Each
+    # origin uses only information that precedes its target.
+    records = []
+    min_train = 4
+    years = series.index.to_numpy(int)
+    values = series.to_numpy(float)
+    for origin_pos in range(min_train - 1, len(series) - 1):
+        train_start = max(0, origin_pos - max(int(lookback), 4) + 1)
+        train_years = years[train_start:origin_pos + 1].astype(float)
+        train_values = values[train_start:origin_pos + 1]
+        train_log = np.log1p(train_values)
+        bt_slope, bt_intercept = np.polyfit(train_years - train_years.min(), train_log, 1)
+        for h in range(1, max(int(horizon), 1) + 1):
+            target_pos = origin_pos + h
+            if target_pos >= len(series):
+                break
+            actual = values[target_pos]
+            trend = max(float(np.expm1(
+                bt_intercept + bt_slope * (years[target_pos] - train_years.min())
+            )), 0.0)
+            naive = float(train_values[-1])
+            records.append((h, actual, trend, naive))
+    backtest = pd.DataFrame(records, columns=["horizon", "actual", "loglinear", "naive"])
+
+    def wape(column: str) -> float:
+        if backtest.empty:
+            return float("inf")
+        denominator = float(backtest["actual"].sum())
+        return float((backtest[column] - backtest["actual"]).abs().sum() / max(denominator, 1.0))
+
+    loglinear_wape, naive_wape = wape("loglinear"), wape("naive")
+    selected_model = "log-linear trend" if loglinear_wape + 1e-12 < naive_wape else "last-value benchmark"
+    point = loglinear_point if selected_model == "log-linear trend" else naive_point
+
     rng = np.random.default_rng(seed)
-    sampled = future_base[:, None] + rng.choice(residuals, (len(future_years), draws), replace=True)
-    sampled = np.maximum(np.expm1(sampled), 0)
+    lower, upper, interval_methods = [], [], []
+    for index, h in enumerate(range(1, len(future_years) + 1)):
+        errors = pd.Series(dtype=float)
+        if not backtest.empty:
+            scoped = backtest[backtest["horizon"] == h]
+            prediction = scoped["loglinear"] if selected_model == "log-linear trend" else scoped["naive"]
+            errors = np.log1p(scoped["actual"]) - np.log1p(prediction.clip(lower=0))
+        if len(errors) >= 5:
+            q_low, q_high = np.quantile(errors.to_numpy(float), [0.1, 0.9])
+            interval_methods.append("rolling-origin empirical errors")
+        else:
+            if selected_model == "log-linear trend":
+                sampled_errors = rng.choice(residuals, max(int(draws), 100), replace=True)
+            else:
+                differences = np.diff(np.log1p(history.to_numpy(float)))
+                sampled_errors = rng.choice(differences if len(differences) else [0.0],
+                                            max(int(draws), 100), replace=True) * np.sqrt(h)
+            q_low, q_high = np.quantile(sampled_errors, [0.1, 0.9])
+            interval_methods.append("in-sample residual fallback")
+        centre = np.log1p(point[index])
+        lo, hi = max(float(np.expm1(centre + q_low)), 0.0), max(float(np.expm1(centre + q_high)), 0.0)
+        lower.append(min(lo, float(point[index])))
+        upper.append(max(hi, float(point[index])))
+
     forecast = pd.DataFrame({
         "year": future_years,
-        "estimate": np.median(sampled, axis=1),
-        "lower": np.percentile(sampled, 10, axis=1),
-        "upper": np.percentile(sampled, 90, axis=1),
+        "estimate": point,
+        "lower": lower,
+        "upper": upper,
         "kind": "Forecast",
     })
-    actual = history.rename(columns={"trial_sites": "estimate"}).assign(
-        lower=lambda d: d["estimate"], upper=lambda d: d["estimate"], kind="Actual"
-    )
+    actual = history.rename("estimate").rename_axis("year").reset_index().assign(
+        lower=lambda d: d["estimate"], upper=lambda d: d["estimate"], kind="Actual")
     result = pd.concat([actual, forecast], ignore_index=True)
     # Fitted model, kept for the methods explanation and for auditing.
     result.attrs["model"] = {
@@ -196,6 +268,11 @@ def forecast_trial_sites(
         "intercept": float(intercept), "slope": float(slope),
         "residual_sd": float(np.std(residuals, ddof=2)) if len(x) > 2 else float("nan"),
         "r_squared": float(1 - residuals.var() / y.var()) if y.var() > 0 else float("nan"),
+        "selected_model": selected_model,
+        "loglinear_backtest_wape": loglinear_wape,
+        "naive_backtest_wape": naive_wape,
+        "backtest_predictions": int(len(backtest)),
+        "interval_method": ", ".join(sorted(set(interval_methods))),
         "draws": int(draws), "seed": int(seed),
     }
     return result

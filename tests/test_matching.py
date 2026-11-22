@@ -43,6 +43,7 @@ CASES = [
     ("DIAB", "Type 2 DM", True),
     ("DIAB", "Pulmonary Oedema", False),
     ("STROKE", "Heat Stroke", False),
+    ("STROKE", "Acute Ischemic Stroke", True),
     ("LRI", "Community-acquired Pneumonia", True),
     # New diseases
     ("MALARIA", "Plasmodium Falciparum Malaria", True),
@@ -57,7 +58,9 @@ CASES = [
     ("MATERNAL", "Pre-Eclampsia", True),
     ("MATERNAL", "Postpartum Hemorrhage", True),
     ("BREAST_CA", "HER2-positive Breast Cancer", True),
+    ("BREAST_CA", "Ductal Carcinoma In Situ", False),
     ("CERVIX_CA", "Cervical Spondylosis", False),
+    ("CERVIX_CA", "Cervical Intraepithelial Neoplasia", False),
     ("CERVIX_CA", "Uterine Cervical Neoplasms", True),
     ("COLORECTAL_CA", "Metastatic Colorectal Cancer", True),
     ("LIVER_CA", "Hepatocellular Carcinoma", True),
@@ -68,7 +71,10 @@ CASES = [
     ("DEPRESSION", "Bone Marrow Depression", False),
     ("ANXIETY", "Generalized Anxiety Disorder", True),
     ("ANXIETY", "Preoperative Anxiety", False),
-    ("HHD", "Essential Hypertension", True),
+    # WHO GHE 1120 is hypertensive heart disease, not uncomplicated
+    # hypertension. The numerator must use the same clinical construct.
+    ("HHD", "Essential Hypertension", False),
+    ("HHD", "Hypertensive Heart Disease", True),
     ("HHD", "Pulmonary Arterial Hypertension", False),
     ("HHD", "Ocular Hypertension", False),
     # MeSH headings put the main word first.
@@ -80,6 +86,16 @@ CASES = [
     ("SELF_HARM", "Suicidal Ideation", True),
     ("CONGENITAL", "Congenital Heart Disease", True),
     ("CONGENITAL", "Congenital Adrenal Hyperplasia", False),
+    # Every configured disease has at least one direct positive contract test.
+    ("TB", "Pulmonary Tuberculosis", True),
+    ("DIARR", "Rotavirus Gastroenteritis", True),
+    ("DIARR", "Irritable Bowel Syndrome With Diarrhea", False),
+    ("MENING", "Bacterial Meningitis", True),
+    ("NEON", "Neonatal Sepsis", True),
+    ("NEON", "Neonatal Diabetes", False),
+    ("STOMACH_CA", "Gastric Adenocarcinoma", True),
+    ("COPD", "Chronic Obstructive Pulmonary Disease", True),
+    ("ALZH", "Alzheimer Disease", True),
 ]
 
 
@@ -105,6 +121,7 @@ def test_every_disease_is_defined_once_everywhere():
     assert set(grouped) == set(DISEASE_PATTERNS) == set(GHE_CAUSES)
     assert set(EXCLUDED_PHRASES) <= set(DISEASE_PATTERNS)
     assert set(EXCLUDE_STUDY_IF) <= set(DISEASE_PATTERNS)
+    assert {cause for cause, _, expected in CASES if expected} == set(DISEASE_PATTERNS)
 
 
 def test_composite_causes_use_disjoint_who_codes():

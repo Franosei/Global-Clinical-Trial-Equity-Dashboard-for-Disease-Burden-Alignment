@@ -1,5 +1,5 @@
 """
-ClinicalTrials.gov v2 → country-year-disease site counts (single parquet output)
+ClinicalTrials.gov v2 → country-year-disease interventional study activity
 
 - Per-disease queries using DISEASE_PATTERNS (from py/global_health_sources.py)
 - Uses v2 endpoint: https://clinicaltrials.gov/api/v2/studies
@@ -7,13 +7,15 @@ ClinicalTrials.gov v2 → country-year-disease site counts (single parquet outpu
 - Country→ISO3 via pycountry (strict ISO-3166 countries only)
 - Trials that match multiple diseases are split across those diseases
 - De-dup per (nct_id, country_iso3, year, cause_code)
+- Excludes observational and expanded-access records
+- Retains removed countries for historical country activity, never as facilities
 
 Outputs:
   data/clean/ctgov_sites.parquet
-     country_iso3, year, cause_code, cause_name, phase, trial_sites
+     country_iso3, year, cause_code, cause_name, phase, study_type, trial_sites
   data/clean/ctgov_facilities.parquet
      one row per (nct_id, cause_code, facility_key): the facility-level detail
-     used to measure existing site capacity for resource planning
+     used as a historical activity proxy for candidate-site prioritisation
 
 Run:
   python -m py.ctgov     OR     python py/ctgov.py
@@ -55,10 +57,12 @@ STUDY_FIELDS = ",".join([
     "protocolSection.identificationModule.nctId",
     "protocolSection.statusModule",
     "protocolSection.conditionsModule",
+    "protocolSection.designModule.studyType",
     "protocolSection.designModule.phases",
     "protocolSection.designModule.enrollmentInfo",
     "protocolSection.contactsLocationsModule.locations",
     "derivedSection.conditionBrowseModule",
+    "derivedSection.miscInfoModule",
 ])
 
 def load_cfg() -> dict:
@@ -76,6 +80,10 @@ BASE_CT_V2 = str(CFG.get("ctgov", {}).get("base_url", "https://clinicaltrials.go
 RETRY_TOTAL = int(CFG.get("retries", {}).get("total", 5))
 RETRY_BACKOFF = float(CFG.get("retries", {}).get("backoff_factor", 0.5))
 DEFAULT_PAGE_SIZE = int(CFG.get("ctgov", {}).get("page_size", 200))
+INCLUDED_STUDY_TYPES = frozenset(
+    str(value).upper() for value in CFG.get("ctgov", {}).get("study_types", ["INTERVENTIONAL"])
+)
+INCLUDE_REMOVED_COUNTRIES = bool(CFG.get("ctgov", {}).get("include_removed_countries", True))
 
 # Year picking rule (explicit & auditable)
 DATE_RULE = str(CFG.get("ctgov", {}).get("date_rule", "start")).lower()  # start | first_posted | primary_completion
@@ -377,7 +385,7 @@ def _country_iso3_cached(label: Optional[str]) -> Optional[str]:
 QUERY_TERMS_PER_DISEASE = 40
 
 FACILITY_COLUMNS = [
-    "nct_id", "cause_code", "year", "phase", "country_iso3", "facility_key",
+    "nct_id", "cause_code", "year", "phase", "study_type", "country_iso3", "facility_key",
     "facility", "city", "lat", "lon", "anonymised", "location_status",
     "overall_status", "enrollment",
 ]
@@ -412,7 +420,7 @@ def _compact(frame: pd.DataFrame) -> pd.DataFrame:
     frame["year"] = frame["year"].astype(int)
     for column in ("lat", "lon", "enrollment"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    for column in ("cause_code", "phase", "country_iso3", "city", "location_status", "overall_status"):
+    for column in ("cause_code", "phase", "study_type", "country_iso3", "city", "location_status", "overall_status"):
         frame[column] = frame[column].astype("category")
     return frame
 
@@ -420,10 +428,14 @@ def _compact(frame: pd.DataFrame) -> pd.DataFrame:
 def _publish_facilities(frame: pd.DataFrame, selected: Set[str]) -> pd.DataFrame:
     """Write one row per study, disease and facility, merging partial refreshes."""
     frame = frame.copy()
-    for column in ("cause_code", "phase", "country_iso3", "city", "location_status", "overall_status"):
+    for column in ("cause_code", "phase", "study_type", "country_iso3", "city", "location_status", "overall_status"):
+        if column not in frame:
+            frame[column] = "LEGACY_UNFILTERED" if column == "study_type" else None
         frame[column] = frame[column].astype(str).replace({"nan": None, "None": None})
     if selected != set(DISEASE_PATTERNS) and OUT_FACILITIES.exists():
         current = pd.read_parquet(OUT_FACILITIES)
+        if "study_type" not in current:
+            current["study_type"] = "LEGACY_UNFILTERED"
         frame = pd.concat([current[~current["cause_code"].isin(selected)], frame], ignore_index=True)
     frame = frame.sort_values(["cause_code", "country_iso3", "facility_key", "year"]).reset_index(drop=True)
     _atomic_write_parquet(frame, OUT_FACILITIES)
@@ -465,11 +477,16 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
                     locm = ps.get("contactsLocationsModule", {}) or {}
                     desm = ps.get("designModule", {}) or {}
                     stat = ps.get("statusModule", {}) or {}
+                    derived = s.get("derivedSection", {}) or {}
 
                     nct = ident.get("nctId")
                     if not nct or nct in seen_nct:
                         continue
                     seen_nct.add(nct)
+
+                    study_type = str(desm.get("studyType") or "UNKNOWN").upper()
+                    if study_type not in INCLUDED_STUDY_TYPES:
+                        continue
 
                     # Match disease using conditions + browse leaves + MeSH (+ derived fallback)
                     conditions = extract_condition_texts(s)
@@ -499,17 +516,37 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
                             "cause_code": cause_code,
                             "cause_name": cause_name,
                             "phase": phase_std,
+                            "study_type": study_type,
                         })
                         name = (loc.get("facility") or "").strip()
                         city = (loc.get("city") or "").strip()
                         geo = loc.get("geoPoint") or {}
                         facility_rows.append((
-                            nct, cause_code, int(year), phase_std, iso3,
+                            nct, cause_code, int(year), phase_std, study_type, iso3,
                             facility_key(name, city, iso3), name, city,
                             geo.get("lat"), geo.get("lon"),
                             facility_is_anonymised(name), loc.get("status"),
                             overall_status, enrollment,
                         ))
+
+                    # Removed countries show that the study previously had a
+                    # location there. They restore historical country activity,
+                    # but lack a trustworthy facility identity and therefore do
+                    # not enter the capacity layer.
+                    if INCLUDE_REMOVED_COUNTRIES:
+                        misc = derived.get("miscInfoModule", {}) or {}
+                        for country in misc.get("removedCountries") or []:
+                            iso3 = _country_iso3_cached(country)
+                            if iso3:
+                                site_rows.append({
+                                    "nct_id": nct,
+                                    "country_iso3": iso3,
+                                    "year": int(year),
+                                    "cause_code": cause_code,
+                                    "cause_name": cause_name,
+                                    "phase": phase_std,
+                                    "study_type": study_type,
+                                })
 
         # Reduce each disease to compact frames before the next one, so memory
         # stays flat however many diseases are pulled.
@@ -523,7 +560,7 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
     if not site_frames:
         print("[WARN] No CT.gov v2 rows collected.")
         # still write an empty parquet with the right schema
-        empty = pd.DataFrame(columns=["country_iso3","year","cause_code","cause_name","phase","trial_sites"])
+        empty = pd.DataFrame(columns=["country_iso3","year","cause_code","cause_name","phase","study_type","trial_sites"])
         if selected == set(DISEASE_PATTERNS):
             _atomic_write_parquet(empty, OUT_PARQUET)
         return empty
@@ -532,17 +569,18 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
     events = pd.concat(site_frames, ignore_index=True)
 
     # 2) Aggregate to counts (one row per country-year-disease-phase)
-    agg = (events.groupby(["country_iso3", "year", "cause_code", "cause_name", "phase"], as_index=False)
+    agg = (events.groupby(["country_iso3", "year", "cause_code", "cause_name", "phase", "study_type"], as_index=False)
                  .agg(trial_sites=("nct_id", "nunique")))
 
     # 3) Write single parquet output with required columns & types
-    cols = ["country_iso3","year","cause_code","cause_name","phase","trial_sites"]
+    cols = ["country_iso3","year","cause_code","cause_name","phase","study_type","trial_sites"]
     agg = agg[cols]
     agg["country_iso3"] = agg["country_iso3"].astype(str)
     agg["year"] = agg["year"].astype(int)
     agg["cause_code"] = agg["cause_code"].astype(str)
     agg["cause_name"] = agg["cause_name"].astype(str)
     agg["phase"] = agg["phase"].astype(str)
+    agg["study_type"] = agg["study_type"].astype(str)
     agg["trial_sites"] = agg["trial_sites"].astype(int)
 
     _publish_facilities(pd.concat(facility_frames, ignore_index=True), selected)
@@ -551,6 +589,8 @@ def pull_ctgov_sites(cause_codes: Optional[Iterable[str]] = None) -> pd.DataFram
         published = agg
     elif OUT_PARQUET.exists():
         current = pd.read_parquet(OUT_PARQUET)
+        if "study_type" not in current:
+            current["study_type"] = "LEGACY_UNFILTERED"
         published = pd.concat(
             [current[~current["cause_code"].isin(selected)], agg], ignore_index=True
         ).sort_values(["cause_code", "year", "country_iso3", "phase"])

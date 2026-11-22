@@ -76,3 +76,18 @@ def test_forecast_reports_its_fitted_model():
     model = forecast_trial_sites(annual, "X").attrs["model"]
     assert (model["first_year"], model["last_year"], model["n_years"]) == (2017, 2024, 8)
     assert abs(model["slope"] - 0.1) < 0.01 and model["r_squared"] > 0.99
+    assert model["selected_model"] == "log-linear trend"
+    assert model["loglinear_backtest_wape"] < model["naive_backtest_wape"]
+
+
+def test_forecast_falls_back_to_naive_when_trend_does_not_validate():
+    years = list(range(2012, 2025))
+    annual = pd.DataFrame({"cause_code": ["X"] * len(years), "year": years,
+                           "trial_sites": [100] * len(years)})
+    result = forecast_trial_sites(annual, "X", horizon=3)
+    model = result.attrs["model"]
+    future = result[result["kind"] == "Forecast"]
+    assert model["selected_model"] == "last-value benchmark"
+    assert (future["estimate"] == 100).all()
+    assert (future["lower"] <= future["estimate"]).all()
+    assert (future["estimate"] <= future["upper"]).all()

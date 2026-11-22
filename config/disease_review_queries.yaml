@@ -1,0 +1,42 @@
+# Independent ClinicalTrials.gov search frame for manual disease-classifier review.
+#
+# These broad queries deliberately differ from the production substring rules.
+# They retrieve likely positives and misleading near-matches. The review tool
+# samples separately from records the classifier accepts and rejects, then uses
+# inverse-sampling weights when it estimates recall within this search frame.
+# Changing this file changes the validation population and must trigger a new
+# blinded review.
+
+HIV: ["HIV/AIDS", "HIV infection", "AIDS"]
+TB: ["tuberculosis", "TB infection"]
+MALARIA: ["malaria", "plasmodium infection"]
+LRI: ["pneumonia", "lower respiratory infection", "COVID pneumonia"]
+DIARR: ["diarrhea", "gastroenteritis", "irritable bowel diarrhea"]
+HEPATITIS: ["hepatitis", "viral hepatitis"]
+MENING: ["meningitis", "meningococcal disease"]
+MEASLES: ["measles", "rubeola"]
+NTD: ["neglected tropical disease", "dengue", "leishmaniasis", "schistosomiasis", "helminth infection"]
+MATERNAL: ["maternal disorder", "pregnancy complication", "postpartum hemorrhage", "preeclampsia"]
+NEON: ["neonatal disorder", "newborn disorder", "prematurity", "neonatal diabetes"]
+LUNG_CA: ["lung neoplasm", "lung cancer", "tracheal neoplasm"]
+BREAST_CA: ["breast neoplasm", "breast cancer", "ductal carcinoma in situ"]
+CERVIX_CA: ["cervical neoplasm", "cervical cancer", "cervical disorder"]
+COLORECTAL_CA: ["colorectal neoplasm", "colon cancer", "rectal cancer"]
+LIVER_CA: ["liver neoplasm", "liver cancer", "liver metastasis"]
+STOMACH_CA: ["gastric neoplasm", "stomach cancer", "gastric disorder"]
+PROSTATE_CA: ["prostate neoplasm", "prostate cancer", "prostatic disorder"]
+IHD: ["ischemic heart disease", "coronary disease", "myocardial ischemia"]
+STROKE: ["stroke", "cerebrovascular disorder", "heat stroke"]
+HHD: ["hypertensive heart disease", "hypertension", "hypertensive disorder"]
+DIAB: ["diabetes", "diabetic disorder", "diabetes insipidus"]
+KIDNEY: ["kidney disease", "renal disorder", "renal neoplasm"]
+COPD: ["chronic obstructive pulmonary disease", "obstructive lung disease", "chronic bronchitis"]
+ASTHMA: ["asthma", "asthmatic disorder"]
+DEPRESSION: ["depression", "depressive disorder", "respiratory depression"]
+ANXIETY: ["anxiety", "anxiety disorder", "preoperative anxiety"]
+ALZH: ["Alzheimer disease", "dementia", "cognitive disorder"]
+CIRRHOSIS: ["liver cirrhosis", "hepatic fibrosis", "liver fibrosis"]
+RTI: ["road traffic injury", "motor vehicle injury", "traffic accident"]
+SELF_HARM: ["self harm", "suicidal behavior", "self injury"]
+SICKLE: ["sickle cell disorder", "hemoglobin SS", "sickle trait"]
+CONGENITAL: ["congenital anomaly", "birth defect", "congenital disorder"]

@@ -4,16 +4,17 @@ The equity view says how many additional study placements a country needs. A
 placement does not have to mean a new site: a facility that has already run
 studies of the disease can host more, and a newly established site can host
 several studies once it exists. This module turns a budget into a placement
-plan that uses measured capacity first and opens new sites only where that is
-the better use of money.
+plan that uses a historical registry-activity proxy first and opens new sites
+only where that is the better use of money.
 
 Measured inputs (no imputation):
-  • Facility capacity from ClinicalTrials.gov: the most studies of the disease a
+  • Facility activity proxy from ClinicalTrials.gov: the most studies of the disease a
     named facility has started in any window as long as the selected year
-    range, up to its last year. Headroom is that demonstrated peak minus the
+    range, up to its last year. Headroom is that historical peak minus the
     studies it already has in the selected range. Anonymised sponsor listings
     are excluded because they cannot be identified as distinct facilities.
-  • New-site capacity: a percentile of the demonstrated capacity of named
+    Registry history does not establish activation, enrolment or spare capacity.
+  • New-site throughput assumption: a percentile of historical activity at named
     facilities in the same country, else the same World Bank income group,
     else all countries. The percentile is an observed value, not interpolated.
   • Country cost scaling: ICP 2021 price level index for health
@@ -26,8 +27,8 @@ cost of establishing a new site, and the budget, all at reference prices.
 
 Optimisation: greedy maximisation of the alignment score per unit of cost.
 At each step the planner compares, for every eligible country, adding one study
-at a site with spare capacity against establishing a new site and filling it up
-to its measured capacity or the country's parity need. The baseline "one new
+against a site's historical activity headroom versus establishing a new site
+and filling it to an assumed throughput or the country's parity need. The baseline "one new
 site per placement" plan uses the same rule with no capacity reuse.
 """
 
@@ -53,12 +54,12 @@ def facility_capacity(
     end: int,
     recency_windows: int = 1,
 ) -> pd.DataFrame:
-    """Demonstrated capacity and spare headroom for each named facility.
+    """Historical registry-activity ceiling and headroom proxy per facility.
 
     The selected range [start, end] is L years long. A facility's capacity is
     the most studies of the disease it started in any L-year window ending on
     or before ``end``; ``used`` is its studies in the selected range itself.
-    Only years up to ``end`` are read, so the plan never relies on activity
+    Only years up to ``end`` are read, so the proxy never relies on activity
     that had not happened yet. A facility counts as active if it started a
     study in the selected range or the ``recency_windows`` L-year windows
     before it.
@@ -99,7 +100,7 @@ def new_site_capacity(
     percentile: float,
     min_facilities: int = 5,
 ) -> pd.DataFrame:
-    """Measured study capacity of a newly established site, per country.
+    """Assumed new-site throughput derived from historical registry activity.
 
     Uses facilities in the country when there are enough of them, otherwise the
     country's income group, otherwise all countries. Returns the observed value
@@ -164,6 +165,7 @@ class PlanResult:
     from_existing: int
     stopped_by: str
     excluded: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _gains(sites: np.ndarray, burden: np.ndarray, deviation_sum: float, additions: np.ndarray) -> np.ndarray:
@@ -243,9 +245,32 @@ def optimise_plan(
     until no action improves alignment, which traces the full cost frontier.
     With ``reuse_capacity=False`` every placement establishes a new site.
     """
+    required = {"country_iso3", "trial_sites", "burden_share"}
+    missing = required.difference(portfolio.columns)
+    if missing:
+        raise ValueError(f"Portfolio is missing required columns: {', '.join(sorted(missing))}")
+    if portfolio.empty:
+        raise ValueError("Portfolio is empty")
+    try:
+        study_cost = float(study_cost)
+        site_cost = float(site_cost)
+        budget = None if budget is None else float(budget)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Costs and budget must be numeric") from exc
+    if not np.isfinite(study_cost) or study_cost <= 0:
+        raise ValueError("Study start-up cost must be a positive finite value")
+    if not np.isfinite(site_cost) or site_cost < 0:
+        raise ValueError("New-site cost must be a non-negative finite value")
+    if budget is not None and (not np.isfinite(budget) or budget < 0):
+        raise ValueError("Budget must be a non-negative finite value or None")
+
     iso3 = portfolio["country_iso3"].to_numpy()
     sites = np.nan_to_num(portfolio["trial_sites"].to_numpy(float), nan=0.0)
     burden = np.nan_to_num(portfolio["burden_share"].to_numpy(float), nan=0.0)
+    if np.any(sites < 0) or np.any(burden < 0):
+        raise ValueError("Trial activity and burden shares must be non-negative")
+    if burden.sum() <= 0:
+        raise ValueError("Portfolio has no positive measured burden")
     burden = burden / burden.sum()
     factor = scale.reindex(iso3).to_numpy(float)
     eligible = np.isfinite(factor) & (factor > 0) & (burden > 0)
@@ -260,7 +285,7 @@ def optimise_plan(
     spend = np.zeros(len(iso3))
     remaining = np.inf if budget is None else float(budget)
     original = sites.copy()
-    before = alignment_score(sites, burden)
+    before = alignment_score(sites, burden) if sites.sum() > 0 else 0.0
     # With no activity at all the distributions share nothing: alignment is 0.
     deviation_sum = float(np.abs(sites / sites.sum() - burden).sum()) if sites.sum() > 0 else 2.0
     ones = np.ones(len(sites), int)
@@ -348,6 +373,14 @@ def optimise_plan(
         "equity_ratio_after": share_after / burden,
         "eligible": eligible,
     })
+    excluded = sorted(iso3[~eligible & (burden > 0)].tolist())
+    excluded_burden = float(burden[~eligible].sum())
+    warnings = [
+        "This is a deterministic equity-allocation heuristic, not a country feasibility or recruitment forecast.",
+        "ClinicalTrials.gov location history is an activity proxy, not evidence of spare operational capacity."
+    ]
+    if excluded_burden > 0:
+        warnings.append(f"Countries holding {excluded_burden:.1%} of measured burden were excluded because costs were unavailable.")
     return PlanResult(
         countries=countries,
         steps=steps,
@@ -358,14 +391,15 @@ def optimise_plan(
         new_sites=int(sites_opened.sum()),
         from_existing=int(existing_added.sum()),
         stopped_by=stopped_by,
-        excluded=sorted(iso3[~eligible & (burden > 0)].tolist()),
+        excluded=excluded,
+        warnings=warnings,
     )
 
 
 def assign_to_facilities(capacity: pd.DataFrame, plan: pd.DataFrame) -> pd.DataFrame:
     """Place each country's reuse allocation at its facilities, largest headroom first.
 
-    Concentrating on the facilities with the most demonstrated spare capacity
+    Concentrating on facilities with the largest historical-activity headroom
     keeps the number of sites involved as small as the data allow.
     """
     rows = []

@@ -1,0 +1,147 @@
+{
+  "generated_at_utc": "2026-11-22T21:54:54+00:00",
+  "seed": 20261122,
+  "per_stratum": 10,
+  "max_records_per_query": 75,
+  "study_types": [
+    "INTERVENTIONAL"
+  ],
+  "search_frame": "config/disease_review_queries.yaml",
+  "rules_sha256": "1c36cdc14afbd1108c21d9e41d1d95a70381b5b1bc030370027421a4b9dd79e2",
+  "populations": {
+    "HIV": {
+      "classifier_positive": 55,
+      "classifier_negative": 6
+    },
+    "TB": {
+      "classifier_positive": 71,
+      "classifier_negative": 8
+    },
+    "MALARIA": {
+      "classifier_positive": 55,
+      "classifier_negative": 1
+    },
+    "LRI": {
+      "classifier_positive": 36,
+      "classifier_negative": 92
+    },
+    "DIARR": {
+      "classifier_positive": 82,
+      "classifier_negative": 80
+    },
+    "HEPATITIS": {
+      "classifier_positive": 56,
+      "classifier_negative": 5
+    },
+    "MENING": {
+      "classifier_positive": 83,
+      "classifier_negative": 6
+    },
+    "MEASLES": {
+      "classifier_positive": 39,
+      "classifier_negative": 25
+    },
+    "NTD": {
+      "classifier_positive": 198,
+      "classifier_negative": 28
+    },
+    "MATERNAL": {
+      "classifier_positive": 103,
+      "classifier_negative": 96
+    },
+    "NEON": {
+      "classifier_positive": 25,
+      "classifier_negative": 106
+    },
+    "LUNG_CA": {
+      "classifier_positive": 64,
+      "classifier_negative": 16
+    },
+    "BREAST_CA": {
+      "classifier_positive": 118,
+      "classifier_negative": 11
+    },
+    "CERVIX_CA": {
+      "classifier_positive": 14,
+      "classifier_negative": 54
+    },
+    "COLORECTAL_CA": {
+      "classifier_positive": 69,
+      "classifier_negative": 4
+    },
+    "LIVER_CA": {
+      "classifier_positive": 45,
+      "classifier_negative": 50
+    },
+    "STOMACH_CA": {
+      "classifier_positive": 40,
+      "classifier_negative": 32
+    },
+    "PROSTATE_CA": {
+      "classifier_positive": 65,
+      "classifier_negative": 7
+    },
+    "IHD": {
+      "classifier_positive": 44,
+      "classifier_negative": 34
+    },
+    "STROKE": {
+      "classifier_positive": 63,
+      "classifier_negative": 33
+    },
+    "HHD": {
+      "classifier_positive": 5,
+      "classifier_negative": 101
+    },
+    "DIAB": {
+      "classifier_positive": 94,
+      "classifier_negative": 53
+    },
+    "KIDNEY": {
+      "classifier_positive": 33,
+      "classifier_negative": 70
+    },
+    "COPD": {
+      "classifier_positive": 47,
+      "classifier_negative": 86
+    },
+    "ASTHMA": {
+      "classifier_positive": 53,
+      "classifier_negative": 3
+    },
+    "DEPRESSION": {
+      "classifier_positive": 84,
+      "classifier_negative": 18
+    },
+    "ANXIETY": {
+      "classifier_positive": 69,
+      "classifier_negative": 50
+    },
+    "ALZH": {
+      "classifier_positive": 63,
+      "classifier_negative": 66
+    },
+    "CIRRHOSIS": {
+      "classifier_positive": 59,
+      "classifier_negative": 19
+    },
+    "RTI": {
+      "classifier_positive": 18,
+      "classifier_negative": 51
+    },
+    "SELF_HARM": {
+      "classifier_positive": 83,
+      "classifier_negative": 24
+    },
+    "SICKLE": {
+      "classifier_positive": 88,
+      "classifier_negative": 1
+    },
+    "CONGENITAL": {
+      "classifier_positive": 1,
+      "classifier_negative": 51
+    }
+  },
+  "review_rows": 597,
+  "blinded": "Classifier predictions are stored only in review_predictions.csv."
+}

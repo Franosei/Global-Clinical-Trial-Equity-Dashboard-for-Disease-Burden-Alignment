@@ -30,6 +30,11 @@ if (!file.exists(GOLD_PATH)) {
 df_gold <- read_parquet(GOLD_PATH) |>
   mutate(across(where(is.character), as.character))
 
+if (!"study_type" %in% names(df_gold) ||
+    !identical(unique(toupper(na.omit(df_gold$study_type))), "INTERVENTIONAL")) {
+  stop("Gold data must declare an interventional-only study_type. Rebuild with the Python pipeline.")
+}
+
 # Harmonise schema (interval-based preferred)
 is_interval <- all(c("interval_start","interval_end","interval_label") %in% names(df_gold))
 if (!is_interval) {
@@ -111,8 +116,17 @@ policy_allocate <- function(d_group, extra_sites) {
       gini_after   = unique(d$gini_er_weighted)
     ))
   }
-  gap <- pmax(d$burden_share - d$trial_share, 0)
-  alloc <- if (sum(gap) > 0) extra_sites * (gap/sum(gap)) else rep(0, nrow(d))
+  extra_sites <- as.integer(extra_sites)
+  total_after <- sum(d$trial_sites) + extra_sites
+  gap <- pmax(d$burden_share * total_after - d$trial_sites, 0)
+  raw_alloc <- if (sum(gap) > 0) extra_sites * (gap/sum(gap)) else rep(0, nrow(d))
+  alloc <- floor(raw_alloc)
+  remainder <- extra_sites - sum(alloc)
+  if (remainder > 0) {
+    # Stable largest-remainder allocation: whole placements and exact total.
+    order_idx <- order(-(raw_alloc - alloc), d$country_iso3)
+    alloc[order_idx[seq_len(remainder)]] <- alloc[order_idx[seq_len(remainder)]] + 1L
+  }
   d_after <- d |>
     mutate(alloc_sites = alloc,
            trial_sites_after = trial_sites + alloc_sites)
@@ -211,15 +225,14 @@ ui <- fluidPage(
       h1("Global Equity in Clinical Trial Site Placement: Assessing Alignment Between Research Activity and Disease Burden"),
       div(
         class = "lead",
-        "Are clinical trial sites placed where disease burden lies? We investigate this by comparing ",
-        "clinical trial site counts from CT.gov with global disease burden measured through WHO DALYs ",
-        "(per-100k, cumulative), aggregated into fixed multi-year periods. ",
+        "Does registered interventional study-country activity align with disease burden? We compare ",
+        "unique ClinicalTrials.gov study-country placements with mean annual absolute WHO DALYs ",
+        "in fixed multi-year periods. ",
         strong("Equity Ratio (ER) = trial share / burden share"),
         " serves as the central measure of alignment, where values near 1 indicate equity between trial activity ",
         "and disease need. Group-level inequality is further summarised by Theil T and the burden-weighted ",
         "Gini of ER, highlighting global disparities in research investment. This dashboard provides an ",
-        "intuitive policy-oriented view to support recruitment planning, trial placement, and equitable ",
-        "distribution of research resources across diseases and regions."
+        "descriptive policy view for country prioritisation before protocol-specific feasibility work."
       )
     ),
     column(
@@ -428,7 +441,7 @@ server <- function(input, output, session) {
   
   # ---------------- Abstract (dynamic text) ----------------
   output$abstract_text <- renderUI({
-    d <- df_group() |> filter(trial_sites >= 1)  # <-- ADDITION: use only countries with ≥1 site
+    d <- df_group() |> filter(is.finite(burden_share), burden_share > 0)
     if (!nrow(d)) return(HTML("<p>No rows for this disease-period.</p>"))
     tot_sites <- sum(d$trial_sites, na.rm = TRUE)
     n_cty     <- n_distinct(d$country_iso3)
@@ -449,16 +462,16 @@ server <- function(input, output, session) {
     HTML(paste0(
       "Trial evidence should be generalisable to those living with the disease. ",
       "We examine whether site placement for <i>", cname, "</i> matches burden during <b>", lbl, "</b>, ",
-      "using WHO DALYs (per-100k, cumulative) and CT.gov site counts.</p>",
+      "using mean annual absolute WHO DALYs and interventional study-country placements.</p>",
       "ER compares each country’s trial share to its burden share. ",
       "Group-level misalignment is summarised by Theil T and the burden-weighted Gini of ER.</p>",
-      "Countries analysed: <b>", n_cty, "</b>. Total sites: <b>", fmt_num(tot_sites),
+      "Countries analysed: <b>", n_cty, "</b>. Total placements: <b>", fmt_num(tot_sites),
       "</b> (median <b>", fmt_num(med_sites), "</b> per country). ",
       "Inequality: Theil T = <b>", sprintf('%.3f', theil), "</b>, Gini(ER|burden) = <b>",
       sprintf('%.3f', giniw), "</b>. ",
       "Under-represented (lowest ER): <b>", under, "</b>. Over-represented (highest ER): <b>", over, "</b>.</p>",
       "ER ≈ 1 suggests alignment; ER < 1 implies likely under-serving relative to burden. ",
-      "These figures support recruitment planning and prioritisation of site placement.</p>"
+      "These figures prioritise questions for a separate feasibility assessment; they do not predict recruitment.</p>"
     ))
   })
   
@@ -542,7 +555,7 @@ server <- function(input, output, session) {
   
   # ---------------- Figure 2: Scatter ----------------
   output$scatter_bvts <- renderPlotly({
-    d <- df_group() |> filter(trial_sites >= 1)  # <-- ADDITION
+    d <- df_group() |> filter(is.finite(burden_share), burden_share > 0)
     if (!nrow(d)) return(NULL)
     p <- ggplot(
       d,
@@ -571,7 +584,7 @@ server <- function(input, output, session) {
   
   # ---------------- Figure 3: Ranks (hover fixed) ----------------
   output$rank_under <- renderPlotly({
-    d <- df_group() |> filter(trial_sites >= 1) |> arrange(equity_ratio) |> slice_head(n = 10)  # <-- ADDITION
+    d <- df_group() |> filter(is.finite(burden_share), burden_share > 0) |> arrange(equity_ratio) |> slice_head(n = 10)
     if (!nrow(d)) return(NULL)
     p <- ggplot(
       d,
@@ -588,7 +601,7 @@ server <- function(input, output, session) {
     ggplotly(p, tooltip = "text")
   })
   output$rank_over <- renderPlotly({
-    d <- df_group() |> filter(trial_sites >= 1) |> arrange(desc(equity_ratio)) |> slice_head(n = 10)  # <-- ADDITION
+    d <- df_group() |> filter(is.finite(burden_share), burden_share > 0) |> arrange(desc(equity_ratio)) |> slice_head(n = 10)
     if (!nrow(d)) return(NULL)
     p <- ggplot(
       d,
@@ -607,7 +620,7 @@ server <- function(input, output, session) {
   
   # ---------------- Key Figures ----------------
   output$key_figs <- renderTable({
-    d <- df_group() |> filter(trial_sites >= 1)  # <-- ADDITION
+    d <- df_group() |> filter(is.finite(burden_share), burden_share > 0)
     if (!nrow(d)) return(NULL)
     tot_sites <- sum(d$trial_sites, na.rm = TRUE)
     n_cty     <- n_distinct(d$country_iso3)
@@ -619,9 +632,9 @@ server <- function(input, output, session) {
     giniw     <- d$gini_er_weighted[[1]]
     tibble::tibble(
       Countries = n_cty,
-      `Total trial sites` = round(tot_sites, 2),
-      `Median sites\n(per country)` = round(med_sites, 2),
-      `Top-10 share\nof sites` = percent(top10_shr, 0.01),
+      `Total study-country placements` = round(tot_sites, 2),
+      `Median placements\n(per country)` = round(med_sites, 2),
+      `Top-10 share\nof placements` = percent(top10_shr, 0.01),
       `Median\nER` = round(med_er, 2),
       `Theil\nT` = round(theil, 2),
       `Gini(ER|burden)` = round(giniw, 2)
@@ -648,7 +661,7 @@ server <- function(input, output, session) {
     </p>
     <p class='subtle'>
       Here: <i>c</i> indexes a country; <i>i</i> runs over all countries; 
-      <i>sites</i> = number of clinical trial sites; <i>DALY</i> = disease burden (DALYs, cumulative in the chosen period).
+      <i>sites</i> in the stored schema means unique interventional study-country placements; <i>DALY</i> is mean annual absolute disease burden.
       Shares each sum to 1 across countries.
     </p>
     <p class='subtle'>
@@ -682,13 +695,13 @@ server <- function(input, output, session) {
   
   # ---------------- Executive Views (NEW) ----------------
   output$impact_gap_sites <- renderPlotly({
-    d <- df_group() |> filter(trial_sites >= 1)  # <-- ADDITION
+    d <- df_group() |> filter(is.finite(burden_share), burden_share > 0)
     if (!nrow(d)) return(NULL)
     total_sites <- sum(d$trial_sites, na.rm = TRUE)
     dd <- d |>
       mutate(
         gap = pmax(burden_share - trial_share, 0),
-        sites_to_parity = gap * total_sites
+        sites_to_parity = pmax((burden_share * total_sites - trial_sites) / (1 - burden_share), 0)
       )
     p <- ggplot(
       dd,
@@ -719,7 +732,8 @@ server <- function(input, output, session) {
   })
   
   output$density_vs_er <- renderPlotly({
-    d <- df_group() |> filter(trial_sites >= 1)  # <-- ADDITION
+    # Log axes cannot display the analytically valid zero-activity countries.
+    d <- df_group() |> filter(trial_sites > 0, is.finite(equity_ratio), equity_ratio > 0)
     if (!nrow(d)) return(NULL)
     p <- ggplot(
       d,
@@ -751,7 +765,7 @@ server <- function(input, output, session) {
   
   # ---------------- Policy planner ----------------
   planner_result <- reactive({
-    d <- df_group() |> filter(trial_sites >= 1)  # <-- ADDITION
+    d <- df_group() |> filter(is.finite(burden_share), burden_share > 0)
     policy_allocate(d, extra_sites = input$extra_sites)
   })
   
@@ -779,7 +793,7 @@ server <- function(input, output, session) {
   
   output$planner_density <- renderPlotly({
     res <- planner_result()
-    d0 <- df_group() |> filter(trial_sites >= 1) |> mutate(kind = "Before", er = equity_ratio)  # <-- ADDITION
+    d0 <- df_group() |> filter(is.finite(burden_share), burden_share > 0) |> mutate(kind = "Before", er = equity_ratio)
     d1 <- res$after     |> mutate(kind = "After",  er = equity_ratio_after)
     dd <- bind_rows(d0, d1)
     p <- ggplot(dd, aes(x = er, colour = kind)) +
@@ -794,11 +808,11 @@ server <- function(input, output, session) {
   
   # ---------------- Country table ----------------
   output$table_all <- renderDT({
-    d <- df_group() |> filter(trial_sites >= 1)  # <-- ADDITION
+    d <- df_group() |> filter(is.finite(burden_share), burden_share > 0)
     d |>
       transmute(
         ISO3 = country_iso3,
-        Sites = trial_sites,
+        Placements = trial_sites,
         DALYs = burden_dalys,
         `Trial share` = trial_share,
         `Burden share` = burden_share,
@@ -807,7 +821,7 @@ server <- function(input, output, session) {
       datatable(options = list(pageLength = 20), rownames = FALSE) |>
       formatPercentage(c("Trial share","Burden share"), 2) |>
       formatRound(c("ER"), 3) |>
-      formatRound(c("Sites","DALYs"), 0)
+      formatRound(c("Placements","DALYs"), 0)
   })
 }
 

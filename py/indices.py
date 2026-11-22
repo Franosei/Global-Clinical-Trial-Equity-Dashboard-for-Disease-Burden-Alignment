@@ -41,7 +41,10 @@ import numpy as np
 import pandas as pd
 import pycountry
 
+from .global_health_sources import DISEASE_PATTERNS
+
 VALID_COUNTRY_ISO3 = frozenset(country.alpha_3 for country in pycountry.countries)
+REQUIRED_STUDY_TYPE = "INTERVENTIONAL"
 
 # ------------------------ Paths ------------------------
 
@@ -164,6 +167,8 @@ def scope_for_years(ct: pd.DataFrame, who: pd.DataFrame, cause_code: str, start:
     Activity is summed across the years; each study counts once, in its year.
     """
     start, end = int(start), int(end)
+    if "study_type" in ct.columns:
+        ct = ct[ct["study_type"].astype(str).str.upper() == REQUIRED_STUDY_TYPE]
     trials = ct[(ct["cause_code"] == cause_code) & ct["year"].between(start, end)
                 & ct["country_iso3"].isin(VALID_COUNTRY_ISO3)]
     trials = trials.groupby("country_iso3")["trial_sites"].sum().rename("trial_sites")
@@ -196,6 +201,18 @@ def run_indices() -> pd.DataFrame:
     who = pd.read_parquet(IN_WHO)
     ct  = pd.read_parquet(IN_CT)
 
+    if "study_type" not in ct.columns:
+        raise RuntimeError(
+            "ClinicalTrials.gov snapshot predates study-type filtering. "
+            "Run `python -m py.ctgov` before rebuilding indices."
+        )
+    observed_types = set(ct["study_type"].dropna().astype(str).str.upper())
+    if observed_types != {REQUIRED_STUDY_TYPE}:
+        raise RuntimeError(
+            "ClinicalTrials.gov snapshot is not planning-safe: expected only "
+            f"{REQUIRED_STUDY_TYPE}, found {sorted(observed_types)}. Run a full rebuild."
+        )
+
     # WHO extracts can contain three-letter regional aggregates (AFR, GLO,
     # etc.). They are not countries and must not enter country-level shares.
     who = who[who["country_iso3"].astype(str).isin(VALID_COUNTRY_ISO3)].copy()
@@ -227,7 +244,7 @@ def run_indices() -> pd.DataFrame:
             "trial_share","burden_share","equity_ratio",
             "trial_density_per_k_dalys",
             "gini_er_weighted","theil_T",
-            "metric_kind","metric_label"
+            "metric_kind","metric_label","study_type"
         ])
         out.to_parquet(OUT_GOLD, index=False)
         _info(f"Wrote {OUT_GOLD} (rows=0)")
@@ -240,21 +257,27 @@ def run_indices() -> pd.DataFrame:
 
         ct_int = (ct.groupby(
                     ["country_iso3", "interval_start", "interval_end", "interval_label",
-                     "cause_code", "cause_name"], as_index=False)
+                     "cause_code"], as_index=False)
                   .agg(trial_sites=("trial_sites", "sum")))
     else:
         # Create an empty ct_int with expected columns to allow merging
         ct_int = pd.DataFrame(columns=[
             "country_iso3","interval_start","interval_end","interval_label",
-            "cause_code","cause_name","trial_sites"
+            "cause_code","trial_sites"
         ])
 
     # ---- Build the FULL universe: (countries ∪) × (causes ∪) × intervals
     countries = pd.Series(pd.unique(pd.concat([who["country_iso3"], ct_int["country_iso3"]], ignore_index=True))).dropna()
-    causes    = pd.DataFrame(pd.unique(pd.concat([who[["cause_code","cause_name"]].apply(tuple, axis=1),
-                                                  ct_int[["cause_code","cause_name"]].apply(tuple, axis=1)],
-                                                 ignore_index=True)),
-                             columns=["pair"]).dropna()
+    cause_codes = pd.Series(pd.unique(pd.concat(
+        [who["cause_code"], ct_int["cause_code"]], ignore_index=True
+    ))).dropna()
+    fallback_names = (pd.concat([ct[["cause_code", "cause_name"]],
+                                 who[["cause_code", "cause_name"]]], ignore_index=True)
+                      .drop_duplicates("cause_code").set_index("cause_code")["cause_name"])
+    causes = pd.DataFrame({"cause_code": cause_codes})
+    causes["cause_name"] = causes["cause_code"].map(
+        lambda code: DISEASE_PATTERNS.get(code, (fallback_names.get(code, code), []))[0]
+    )
     if causes.empty:
         _warn("No causes found in WHO or CT.gov; output will be empty.")
         out = pd.DataFrame(columns=[
@@ -264,14 +287,11 @@ def run_indices() -> pd.DataFrame:
             "trial_share","burden_share","equity_ratio",
             "trial_density_per_k_dalys",
             "gini_er_weighted","theil_T",
-            "metric_kind","metric_label"
+            "metric_kind","metric_label","study_type"
         ])
         out.to_parquet(OUT_GOLD, index=False)
         _info(f"Wrote {OUT_GOLD} (rows=0)")
         return out
-
-    causes[["cause_code","cause_name"]] = pd.DataFrame(causes["pair"].tolist(), index=causes.index)
-    causes = causes.drop(columns=["pair"])
 
     intervals_df = pd.DataFrame(
         [(s, e, f"{s} to {e}") for (s, e) in _INTERVALS],
@@ -290,19 +310,26 @@ def run_indices() -> pd.DataFrame:
 
     # ---- Merge WHO & CT aggregates onto the universe (keep originals as-is)
     df = (universe
-          .merge(who, on=["country_iso3","cause_code","cause_name","interval_start"], how="left")
-          .merge(ct_int, on=["country_iso3","cause_code","cause_name","interval_start","interval_end","interval_label"], how="left")
+          .merge(who.drop(columns="cause_name"),
+                 on=["country_iso3","cause_code","interval_start"], how="left")
+          .merge(ct_int, on=["country_iso3","cause_code","interval_start","interval_end","interval_label"], how="left")
           .copy())
 
     # IMPORTANT: Do NOT overwrite original columns with zeros.
     # For math, use filled helper columns (NaN -> 0 for totals/shares only).
     df["_trial_sites_filled"]   = df["trial_sites"].fillna(0.0)
     df["_burden_dalys_filled"]  = df["burden_dalys"].fillna(0.0)
+    df["_burden_observed"] = df["_burden_dalys_filled"] > 0
+    # The analytical cohort is countries with measured burden. CT.gov-only
+    # countries remain visible in the export but cannot enter its denominator.
+    df["_trial_sites_in_cohort"] = np.where(
+        df["_burden_observed"], df["_trial_sites_filled"], 0.0
+    )
 
     # ---- Totals per interval × cause (using the filled helpers)
     totals = (
         df.groupby(["interval_start","interval_end","interval_label","cause_code"], as_index=False)
-          .agg(trial_sites_total=("_trial_sites_filled","sum"),
+          .agg(trial_sites_total=("_trial_sites_in_cohort","sum"),
                burden_total=("_burden_dalys_filled","sum"))
     )
 
@@ -312,10 +339,13 @@ def run_indices() -> pd.DataFrame:
     # If total == 0, share is 0 by convention; otherwise standard fraction.
     # Keep shares as float in [0,1], and allow NaN only when denominator is NaN (shouldn't happen due to fill=0).
     ts_den = df["trial_sites_total"].replace({0: np.nan})
-    df["trial_share"] = np.where(ts_den.isna(), 0.0, df["_trial_sites_filled"] / ts_den)
+    df["trial_share"] = np.where(
+        df["_burden_observed"] & ts_den.notna(), df["_trial_sites_in_cohort"] / ts_den, 0.0
+    )
 
     bd_den = df["burden_total"].replace({0: np.nan})
     df["burden_share"] = np.where(bd_den.isna(), 0.0, df["_burden_dalys_filled"] / bd_den)
+    df["study_type"] = REQUIRED_STUDY_TYPE
 
     # ---- Equity Ratio: ER = trial_share / burden_share; undefined where burden_share==0
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -356,7 +386,7 @@ def run_indices() -> pd.DataFrame:
         "trial_share","burden_share","equity_ratio",
         "trial_density_per_k_dalys",
         "gini_er_weighted","theil_T",
-        "metric_kind","metric_label"
+        "metric_kind","metric_label","study_type"
     ]
     out = (df[out_cols]
            .sort_values(["interval_start","cause_code","country_iso3"])

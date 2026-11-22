@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from py.ctgov import facility_is_anonymised
 from py.indices import scope_for_years
@@ -151,6 +152,14 @@ def test_country_without_price_level_is_excluded_not_estimated():
     by_country = plan.countries.set_index("country_iso3")
     assert by_country.loc["LOWB", "placements"] == 0
     assert "LOWB" in plan.excluded
+
+
+def test_invalid_cost_inputs_fail_closed_with_clear_errors():
+    common = (portfolio(), series({}), series({}), series({"HIGH": 1, "LOWA": 1, "LOWB": 1}))
+    with pytest.raises(ValueError, match="positive finite"):
+        optimise_plan(*common, 0, 100_000, 1_000_000)
+    with pytest.raises(ValueError, match="numeric"):
+        optimise_plan(*common, None, 100_000, 1_000_000)
 
 
 def test_unlimited_budget_stops_when_alignment_cannot_improve():

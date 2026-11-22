@@ -1,0 +1,11 @@
+{
+  "generated_at_utc": "2026-11-22T21:56:36+00:00",
+  "diseases_expected": 33,
+  "diseases_with_precision_and_recall": 0,
+  "min_reviewed_per_disease": 10,
+  "review_complete": false,
+  "independently_verified": false,
+  "validation_complete": false,
+  "reviewers": [],
+  "rules_sha256": "1c36cdc14afbd1108c21d9e41d1d95a70381b5b1bc030370027421a4b9dd79e2"
+}

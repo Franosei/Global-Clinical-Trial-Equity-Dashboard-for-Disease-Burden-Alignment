@@ -1,0 +1,278 @@
+cause_code,cause_name,rule_type,term
+HIV,HIV/AIDS,include_term,hiv
+HIV,HIV/AIDS,include_term,acquired immunodeficiency
+HIV,HIV/AIDS,include_term,aids related
+HIV,HIV/AIDS,include_term,aids defining
+TB,Tuberculosis,include_term,tuberculosis
+TB,Tuberculosis,include_term,tb
+TB,Tuberculosis,include_term,mycobacterium tuberculosis
+MALARIA,Malaria,include_term,malaria
+MALARIA,Malaria,include_term,plasmodium
+LRI,Lower respiratory infections,include_term,pneumonia
+LRI,Lower respiratory infections,include_term,lower respiratory tract infection
+LRI,Lower respiratory infections,include_term,lower respiratory infection
+LRI,Lower respiratory infections,include_term,bronchiolitis
+LRI,Lower respiratory infections,include_term,acute lower respiratory
+LRI,Lower respiratory infections,include_term,lri
+LRI,Lower respiratory infections,exclude_study_if,covid
+LRI,Lower respiratory infections,exclude_study_if,sars cov 2
+LRI,Lower respiratory infections,exclude_study_if,coronavirus disease 2019
+LRI,Lower respiratory infections,exclude_study_if,2019 ncov
+DIARR,Diarrhoeal diseases,include_term,diarrhoea
+DIARR,Diarrhoeal diseases,include_term,diarrhea
+DIARR,Diarrhoeal diseases,include_term,diarrhoeal
+DIARR,Diarrhoeal diseases,include_term,diarrheal
+DIARR,Diarrhoeal diseases,include_term,gastroenteritis
+DIARR,Diarrhoeal diseases,include_term,rotavirus
+DIARR,Diarrhoeal diseases,include_term,cholera
+DIARR,Diarrhoeal diseases,include_term,shigella
+DIARR,Diarrhoeal diseases,include_term,shigellosis
+DIARR,Diarrhoeal diseases,excluded_phrase,chemotherapy induced diarrhea
+DIARR,Diarrhoeal diseases,excluded_phrase,chemotherapy induced diarrhoea
+DIARR,Diarrhoeal diseases,excluded_phrase,irritable bowel syndrome with diarrhea
+HEPATITIS,Viral hepatitis,include_term,hepatitis b
+HEPATITIS,Viral hepatitis,include_term,hepatitis c
+HEPATITIS,Viral hepatitis,include_term,viral hepatitis
+HEPATITIS,Viral hepatitis,include_term,hepatitis a
+HEPATITIS,Viral hepatitis,include_term,hepatitis e
+HEPATITIS,Viral hepatitis,include_term,hepatitis d
+HEPATITIS,Viral hepatitis,include_term,hepatitis delta
+HEPATITIS,Viral hepatitis,include_term,hbv
+HEPATITIS,Viral hepatitis,include_term,hcv
+HEPATITIS,Viral hepatitis,include_term,hev
+MENING,Meningitis,include_term,meningitis
+MENING,Meningitis,include_term,meningococcal
+MENING,Meningitis,include_term,meningococcus
+MENING,Meningitis,include_term,neisseria meningitidis
+MEASLES,Measles,include_term,measles
+MEASLES,Measles,include_term,rubeola
+MEASLES,Measles,include_term,morbillivirus
+NTD,Neglected tropical diseases,include_term,dengue
+NTD,Neglected tropical diseases,include_term,leishmaniasis
+NTD,Neglected tropical diseases,include_term,schistosomiasis
+NTD,Neglected tropical diseases,include_term,chagas
+NTD,Neglected tropical diseases,include_term,trypanosomiasis
+NTD,Neglected tropical diseases,include_term,lymphatic filariasis
+NTD,Neglected tropical diseases,include_term,onchocerciasis
+NTD,Neglected tropical diseases,include_term,trachoma
+NTD,Neglected tropical diseases,include_term,rabies
+NTD,Neglected tropical diseases,include_term,leprosy
+NTD,Neglected tropical diseases,include_term,hookworm
+NTD,Neglected tropical diseases,include_term,soil transmitted helminth
+NTD,Neglected tropical diseases,include_term,cysticercosis
+NTD,Neglected tropical diseases,include_term,echinococcosis
+NTD,Neglected tropical diseases,include_term,ascariasis
+NTD,Neglected tropical diseases,include_term,trichuriasis
+NTD,Neglected tropical diseases,include_term,fascioliasis
+NTD,Neglected tropical diseases,include_term,clonorchiasis
+NTD,Neglected tropical diseases,include_term,opisthorchiasis
+NTD,Neglected tropical diseases,include_term,sleeping sickness
+NTD,Neglected tropical diseases,include_term,bilharzia
+NTD,Neglected tropical diseases,include_term,river blindness
+NTD,Neglected tropical diseases,include_term,hydatid
+NTD,Neglected tropical diseases,include_term,filariasis
+NTD,Neglected tropical diseases,include_term,hansen disease
+NTD,Neglected tropical diseases,include_term,helminth
+MATERNAL,Maternal conditions,include_term,preeclampsia
+MATERNAL,Maternal conditions,include_term,pre eclampsia
+MATERNAL,Maternal conditions,include_term,eclampsia
+MATERNAL,Maternal conditions,include_term,postpartum hemorrhage
+MATERNAL,Maternal conditions,include_term,postpartum haemorrhage
+MATERNAL,Maternal conditions,include_term,gestational hypertension
+MATERNAL,Maternal conditions,include_term,miscarriage
+MATERNAL,Maternal conditions,include_term,ectopic pregnancy
+MATERNAL,Maternal conditions,include_term,hyperemesis gravidarum
+MATERNAL,Maternal conditions,include_term,maternal sepsis
+MATERNAL,Maternal conditions,include_term,puerperal
+MATERNAL,Maternal conditions,include_term,post partum hemorrhage
+MATERNAL,Maternal conditions,include_term,pregnancy induced hypertension
+MATERNAL,Maternal conditions,include_term,obstructed labor
+MATERNAL,Maternal conditions,include_term,obstructed labour
+MATERNAL,Maternal conditions,include_term,maternal mortality
+MATERNAL,Maternal conditions,include_term,maternal death
+NEON,Neonatal conditions,include_term,neonatal
+NEON,Neonatal conditions,include_term,newborn
+NEON,Neonatal conditions,include_term,preterm infant
+NEON,Neonatal conditions,include_term,preterm birth
+NEON,Neonatal conditions,include_term,prematurity
+NEON,Neonatal conditions,include_term,birth asphyxia
+NEON,Neonatal conditions,include_term,neonatal sepsis
+NEON,Neonatal conditions,include_term,bronchopulmonary dysplasia
+NEON,Neonatal conditions,include_term,neonatal encephalopathy
+NEON,Neonatal conditions,include_term,hypoxic ischemic encephalopathy
+NEON,Neonatal conditions,excluded_phrase,neonatal diabetes
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,lung cancer
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,non small cell lung
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,small cell lung
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,nsclc
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,lung carcinoma
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,lung neoplasm
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,lung adenocarcinoma
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,sclc
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,bronchogenic carcinoma
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,lung tumor
+LUNG_CA,"Trachea, bronchus and lung cancers",include_term,lung tumour
+BREAST_CA,Breast cancer,include_term,breast cancer
+BREAST_CA,Breast cancer,include_term,breast carcinoma
+BREAST_CA,Breast cancer,include_term,breast neoplasm
+BREAST_CA,Breast cancer,include_term,breast tumor
+BREAST_CA,Breast cancer,include_term,breast tumour
+BREAST_CA,Breast cancer,include_term,invasive lobular carcinoma
+CERVIX_CA,Cervical cancer,include_term,cervical cancer
+CERVIX_CA,Cervical cancer,include_term,cervix cancer
+CERVIX_CA,Cervical cancer,include_term,cervical carcinoma
+CERVIX_CA,Cervical cancer,include_term,cervical neoplasm
+CERVIX_CA,Cervical cancer,include_term,uterine cervical neoplasm
+CERVIX_CA,Cervical cancer,include_term,cervix carcinoma
+COLORECTAL_CA,Colorectal cancer,include_term,colorectal cancer
+COLORECTAL_CA,Colorectal cancer,include_term,colon cancer
+COLORECTAL_CA,Colorectal cancer,include_term,rectal cancer
+COLORECTAL_CA,Colorectal cancer,include_term,colorectal carcinoma
+COLORECTAL_CA,Colorectal cancer,include_term,colorectal neoplasm
+COLORECTAL_CA,Colorectal cancer,include_term,colon carcinoma
+COLORECTAL_CA,Colorectal cancer,include_term,rectal carcinoma
+COLORECTAL_CA,Colorectal cancer,include_term,colonic neoplasm
+COLORECTAL_CA,Colorectal cancer,include_term,rectal neoplasm
+COLORECTAL_CA,Colorectal cancer,include_term,crc
+LIVER_CA,Liver cancer,include_term,hepatocellular carcinoma
+LIVER_CA,Liver cancer,include_term,liver cancer
+LIVER_CA,Liver cancer,include_term,hcc
+LIVER_CA,Liver cancer,include_term,hepatocellular cancer
+LIVER_CA,Liver cancer,include_term,liver neoplasm
+LIVER_CA,Liver cancer,include_term,hepatoma
+LIVER_CA,Liver cancer,include_term,liver carcinoma
+STOMACH_CA,Stomach cancer,include_term,gastric cancer
+STOMACH_CA,Stomach cancer,include_term,stomach cancer
+STOMACH_CA,Stomach cancer,include_term,gastric carcinoma
+STOMACH_CA,Stomach cancer,include_term,gastric adenocarcinoma
+STOMACH_CA,Stomach cancer,include_term,stomach neoplasm
+STOMACH_CA,Stomach cancer,include_term,gastric neoplasm
+PROSTATE_CA,Prostate cancer,include_term,prostate cancer
+PROSTATE_CA,Prostate cancer,include_term,prostatic cancer
+PROSTATE_CA,Prostate cancer,include_term,prostate carcinoma
+PROSTATE_CA,Prostate cancer,include_term,prostatic neoplasm
+PROSTATE_CA,Prostate cancer,include_term,prostate adenocarcinoma
+PROSTATE_CA,Prostate cancer,include_term,prostatic adenocarcinoma
+PROSTATE_CA,Prostate cancer,include_term,crpc
+PROSTATE_CA,Prostate cancer,include_term,mcrpc
+IHD,Ischaemic heart disease,include_term,coronary artery disease
+IHD,Ischaemic heart disease,include_term,myocardial infarction
+IHD,Ischaemic heart disease,include_term,acute coronary syndrome
+IHD,Ischaemic heart disease,include_term,ischemic heart
+IHD,Ischaemic heart disease,include_term,ischaemic heart
+IHD,Ischaemic heart disease,include_term,coronary heart disease
+IHD,Ischaemic heart disease,include_term,coronary disease
+IHD,Ischaemic heart disease,include_term,angina pectoris
+IHD,Ischaemic heart disease,include_term,myocardial ischemia
+IHD,Ischaemic heart disease,include_term,myocardial ischaemia
+IHD,Ischaemic heart disease,include_term,ihd
+STROKE,Stroke,include_term,stroke
+STROKE,Stroke,include_term,cerebrovascular
+STROKE,Stroke,include_term,cerebral infarction
+STROKE,Stroke,include_term,intracerebral hemorrhage
+STROKE,Stroke,include_term,intracerebral haemorrhage
+STROKE,Stroke,include_term,subarachnoid hemorrhage
+STROKE,Stroke,include_term,subarachnoid haemorrhage
+STROKE,Stroke,include_term,cbvd
+STROKE,Stroke,excluded_phrase,heat stroke
+STROKE,Stroke,excluded_phrase,heatstroke
+HHD,Hypertensive heart disease,include_term,hypertensive heart disease
+HHD,Hypertensive heart disease,include_term,hypertensive heart failure
+HHD,Hypertensive heart disease,include_term,hypertensive cardiomyopathy
+HHD,Hypertensive heart disease,include_term,hypertensive cardiac disease
+HHD,Hypertensive heart disease,excluded_phrase,pulmonary hypertension
+HHD,Hypertensive heart disease,excluded_phrase,pulmonary arterial hypertension
+HHD,Hypertensive heart disease,excluded_phrase,portal hypertension
+HHD,Hypertensive heart disease,excluded_phrase,intracranial hypertension
+HHD,Hypertensive heart disease,excluded_phrase,ocular hypertension
+HHD,Hypertensive heart disease,excluded_phrase,gestational hypertension
+HHD,Hypertensive heart disease,excluded_phrase,pregnancy induced hypertension
+HHD,Hypertensive heart disease,excluded_phrase,intra abdominal hypertension
+DIAB,Diabetes mellitus,include_term,diabetes
+DIAB,Diabetes mellitus,include_term,diabetic
+DIAB,Diabetes mellitus,include_term,t2dm
+DIAB,Diabetes mellitus,include_term,t1dm
+DIAB,Diabetes mellitus,include_term,t2d
+DIAB,Diabetes mellitus,include_term,t1d
+DIAB,Diabetes mellitus,include_term,dm
+DIAB,Diabetes mellitus,excluded_phrase,diabetes insipidus
+KIDNEY,Kidney diseases,include_term,chronic kidney
+KIDNEY,Kidney diseases,include_term,kidney disease
+KIDNEY,Kidney diseases,include_term,kidney failure
+KIDNEY,Kidney diseases,include_term,renal failure
+KIDNEY,Kidney diseases,include_term,renal insufficiency
+KIDNEY,Kidney diseases,include_term,end stage renal
+KIDNEY,Kidney diseases,include_term,end stage kidney
+KIDNEY,Kidney diseases,include_term,diabetic nephropathy
+KIDNEY,Kidney diseases,include_term,glomerulonephritis
+KIDNEY,Kidney diseases,include_term,esrd
+KIDNEY,Kidney diseases,include_term,eskd
+KIDNEY,Kidney diseases,include_term,ckd
+KIDNEY,Kidney diseases,include_term,dialysis
+COPD,Chronic obstructive pulmonary disease,include_term,copd
+COPD,Chronic obstructive pulmonary disease,include_term,chronic obstructive pulmonary
+COPD,Chronic obstructive pulmonary disease,include_term,chronic obstructive lung
+COPD,Chronic obstructive pulmonary disease,include_term,emphysema
+COPD,Chronic obstructive pulmonary disease,include_term,chronic bronchitis
+ASTHMA,Asthma,include_term,asthma
+ASTHMA,Asthma,include_term,asthmatic
+DEPRESSION,Depressive disorders,include_term,depression
+DEPRESSION,Depressive disorders,include_term,depressive
+DEPRESSION,Depressive disorders,include_term,major depressive
+DEPRESSION,Depressive disorders,include_term,dysthymia
+DEPRESSION,Depressive disorders,include_term,dysthymic
+DEPRESSION,Depressive disorders,excluded_phrase,respiratory depression
+DEPRESSION,Depressive disorders,excluded_phrase,bone marrow depression
+DEPRESSION,Depressive disorders,excluded_phrase,marrow depression
+DEPRESSION,Depressive disorders,excluded_phrase,myocardial depression
+DEPRESSION,Depressive disorders,excluded_phrase,cortical spreading depression
+DEPRESSION,Depressive disorders,excluded_phrase,immune depression
+DEPRESSION,Depressive disorders,excluded_phrase,st segment depression
+ANXIETY,Anxiety disorders,include_term,anxiety disorder
+ANXIETY,Anxiety disorders,include_term,generalized anxiety
+ANXIETY,Anxiety disorders,include_term,generalised anxiety
+ANXIETY,Anxiety disorders,include_term,panic disorder
+ANXIETY,Anxiety disorders,include_term,social anxiety
+ANXIETY,Anxiety disorders,include_term,agoraphobia
+ANXIETY,Anxiety disorders,include_term,phobia
+ANXIETY,Anxiety disorders,include_term,phobic disorder
+ANXIETY,Anxiety disorders,include_term,separation anxiety
+ALZH,Alzheimer's disease and dementias,include_term,alzheimer
+ALZH,Alzheimer's disease and dementias,include_term,dementia
+CIRRHOSIS,Cirrhosis of the liver,include_term,cirrhosis
+CIRRHOSIS,Cirrhosis of the liver,include_term,liver fibrosis
+CIRRHOSIS,Cirrhosis of the liver,include_term,hepatic fibrosis
+CIRRHOSIS,Cirrhosis of the liver,include_term,chronic liver disease
+RTI,Road traffic injuries,include_term,road traffic
+RTI,Road traffic injuries,include_term,traffic accident
+RTI,Road traffic injuries,include_term,traffic injury
+RTI,Road traffic injuries,include_term,motor vehicle
+RTI,Road traffic injuries,include_term,road injury
+RTI,Road traffic injuries,include_term,transport injury
+RTI,Road traffic injuries,include_term,car crash
+RTI,Road traffic injuries,include_term,vehicle collision
+SELF_HARM,Self-harm,include_term,suicide
+SELF_HARM,Self-harm,include_term,suicidal
+SELF_HARM,Self-harm,include_term,self harm
+SELF_HARM,Self-harm,include_term,self injury
+SELF_HARM,Self-harm,include_term,self injurious
+SELF_HARM,Self-harm,include_term,parasuicide
+SICKLE,Sickle cell disease,include_term,sickle cell
+SICKLE,Sickle cell disease,include_term,drepanocytosis
+SICKLE,Sickle cell disease,include_term,hbss
+SICKLE,Sickle cell disease,include_term,hemoglobin ss
+SICKLE,Sickle cell disease,include_term,haemoglobin ss
+CONGENITAL,Congenital anomalies,include_term,congenital heart
+CONGENITAL,Congenital anomalies,include_term,congenital anomal
+CONGENITAL,Congenital anomalies,include_term,congenital malformation
+CONGENITAL,Congenital anomalies,include_term,birth defect
+CONGENITAL,Congenital anomalies,include_term,neural tube defect
+CONGENITAL,Congenital anomalies,include_term,spina bifida
+CONGENITAL,Congenital anomalies,include_term,cleft lip
+CONGENITAL,Congenital anomalies,include_term,cleft palate
+CONGENITAL,Congenital anomalies,include_term,down syndrome
+CONGENITAL,Congenital anomalies,include_term,trisomy 21
+CONGENITAL,Congenital anomalies,include_term,tetralogy of fallot
+CONGENITAL,Congenital anomalies,include_term,hypoplastic left heart
+CONGENITAL,Congenital anomalies,include_term,gastroschisis
+CONGENITAL,Congenital anomalies,include_term,congenital diaphragmatic hernia

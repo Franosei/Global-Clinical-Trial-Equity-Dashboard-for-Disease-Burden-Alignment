@@ -100,9 +100,9 @@ DISEASE_PATTERNS: Dict[str, Tuple[str, List[str]]] = {
                  "lung carcinoma", "lung neoplasm", "lung adenocarcinoma", "sclc", "bronchogenic carcinoma",
                  "lung tumor", "lung tumour"]),
     "BREAST_CA": ("Breast cancer", ["breast cancer", "breast carcinoma", "breast neoplasm", "breast tumor",
-                  "breast tumour", "ductal carcinoma in situ", "dcis", "invasive lobular carcinoma"]),
+                  "breast tumour", "invasive lobular carcinoma"]),
     "CERVIX_CA": ("Cervical cancer", ["cervical cancer", "cervix cancer", "cervical carcinoma", "cervical neoplasm",
-                  "uterine cervical neoplasm", "cervical intraepithelial neoplasia", "cervix carcinoma"]),
+                  "uterine cervical neoplasm", "cervix carcinoma"]),
     "COLORECTAL_CA": ("Colorectal cancer", ["colorectal cancer", "colon cancer", "rectal cancer", "colorectal carcinoma",
                       "colorectal neoplasm", "colon carcinoma", "rectal carcinoma", "colonic neoplasm",
                       "rectal neoplasm", "crc"]),
@@ -118,10 +118,13 @@ DISEASE_PATTERNS: Dict[str, Tuple[str, List[str]]] = {
                  "myocardial ischemia", "myocardial ischaemia", "ihd"]),
     "STROKE":   ("Stroke", ["stroke", "cerebrovascular", "cerebral infarction", "intracerebral hemorrhage",
                  "intracerebral haemorrhage", "subarachnoid hemorrhage", "subarachnoid haemorrhage", "cbvd"]),
-    "HHD":      ("Hypertensive heart disease", ["hypertension", "hypertensive heart", "high blood pressure",
-                 "hypertensive cardiomyopathy", "essential hypertension"]),
+    # Keep the trial construct aligned to WHO GHE 1120 (hypertensive heart
+    # disease). Generic hypertension/high blood pressure is not equivalent and
+    # previously made this numerator much broader than its burden denominator.
+    "HHD":      ("Hypertensive heart disease", ["hypertensive heart disease", "hypertensive heart failure",
+                  "hypertensive cardiomyopathy", "hypertensive cardiac disease"]),
     "DIAB":     ("Diabetes mellitus", ["diabetes", "diabetic", "t2dm", "t1dm", "t2d", "t1d", "dm"]),
-    "KIDNEY":   ("Chronic kidney disease", ["chronic kidney", "kidney disease", "kidney failure", "renal failure",
+    "KIDNEY":   ("Kidney diseases", ["chronic kidney", "kidney disease", "kidney failure", "renal failure",
                  "renal insufficiency", "end stage renal", "end stage kidney", "diabetic nephropathy",
                  "glomerulonephritis", "esrd", "eskd", "ckd", "dialysis"]),
     # Respiratory
@@ -134,8 +137,7 @@ DISEASE_PATTERNS: Dict[str, Tuple[str, List[str]]] = {
                  "social anxiety", "agoraphobia", "phobia", "phobic disorder", "separation anxiety"]),
     "ALZH":     ("Alzheimer's disease and dementias", ["alzheimer", "dementia"]),
     # Digestive
-    "CIRRHOSIS": ("Cirrhosis of the liver", ["cirrhosis", "liver fibrosis", "hepatic fibrosis", "chronic liver disease",
-                  "hepatic encephalopathy", "portal hypertension", "esophageal varices", "oesophageal varices"]),
+    "CIRRHOSIS": ("Cirrhosis of the liver", ["cirrhosis", "liver fibrosis", "hepatic fibrosis", "chronic liver disease"]),
     # Injuries
     "RTI":      ("Road traffic injuries", ["road traffic", "traffic accident", "traffic injury", "motor vehicle",
                  "road injury", "transport injury", "car crash", "vehicle collision"]),

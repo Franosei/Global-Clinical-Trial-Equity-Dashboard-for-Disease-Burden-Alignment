@@ -105,6 +105,12 @@ def _annual_cached(_token: str) -> pd.DataFrame:
     if not CT_PATH.exists():
         return pd.DataFrame(columns=["country_iso3", "year", "cause_code", "trial_sites"])
     frame = pd.read_parquet(CT_PATH)
+    if "study_type" not in frame:
+        raise RuntimeError("The trial snapshot is legacy/unfiltered. Run `python -m py.ctgov` before planning.")
+    study_type = frame["study_type"].astype(str).str.upper()
+    if set(study_type.dropna()) != {"INTERVENTIONAL"}:
+        raise RuntimeError("Planning requires a fully rebuilt INTERVENTIONAL-only trial snapshot.")
+    frame = frame[study_type == "INTERVENTIONAL"].copy()
     frame["trial_sites"] = pd.to_numeric(frame["trial_sites"], errors="coerce").fillna(0)
     frame["year"] = pd.to_numeric(frame["year"], errors="coerce")
     return frame.dropna(subset=["year"]).astype({"year": int})
@@ -211,9 +217,9 @@ TABLE_STYLE = dict(
 PLAN_TABLE_COLUMNS = [
     ("Country", "country_name"), ("Burden share", "burden_share"),
     ("Equity ratio now", "equity_ratio_before"), ("Equity ratio after", "equity_ratio_after"),
-    ("Placements", "placements"), ("At existing sites", "placements_existing"),
-    ("New sites", "new_sites"), ("Studies per new site", "new_site_capacity"),
-    ("Capacity basis", "capacity_basis"), ("Cost (US$)", "cost"),
+    ("Placements", "placements"), ("Against historical headroom", "placements_existing"),
+    ("New sites", "new_sites"), ("Assumed studies per new site", "new_site_capacity"),
+    ("Throughput-assumption basis", "capacity_basis"), ("Cost (US$)", "cost"),
     ("Cost index vs reference", "cost_scale"), ("Cost basis", "cost_basis"),
     ("Candidate cities for new sites", "candidate_cities"),
     ("Physicians per 1,000", "physicians_per_1000"), ("Hospital beds per 1,000", "hospital_beds_per_1000"),
@@ -229,6 +235,14 @@ def _facilities(_token: str) -> pd.DataFrame:
     if not FACILITIES_PATH.exists():
         return pd.DataFrame(columns=["nct_id", "cause_code", "year", "country_iso3", "facility_key",
                                      "facility", "city", "lat", "lon", "anonymised"])
+    try:
+        study_types = pd.read_parquet(FACILITIES_PATH, columns=["study_type"])
+    except Exception as exc:
+        raise RuntimeError(
+            "The facility snapshot is legacy/unfiltered. Run `python -m py.ctgov` before planning."
+        ) from exc
+    if set(study_types["study_type"].dropna().astype(str).str.upper()) != {"INTERVENTIONAL"}:
+        raise RuntimeError("Planning requires a fully rebuilt INTERVENTIONAL-only facility snapshot.")
     return pd.read_parquet(FACILITIES_PATH, columns=[
         "nct_id", "cause_code", "year", "country_iso3", "facility_key",
         "facility", "city", "lat", "lon", "anonymised",
@@ -415,7 +429,7 @@ app.layout = html.Div(
             ]),
             chapter("Forecast", "forecast", [
                 html.Div([
-                    figure_block(5, "Global trial placements, observed and projected", f"Annual placements for this disease, with a {FORECAST_HORIZON}-year projection. The shaded band is an 80% residual-bootstrap interval around a log-linear trend.", "forecast-chart"),
+                    figure_block(5, "Global trial placements, observed and projected", f"Annual interventional study-country placements, with a {FORECAST_HORIZON}-year projection. The trend is used only if it beats a last-value benchmark in rolling validation; the shaded band uses empirical forecast errors.", "forecast-chart"),
                     html.Aside([html.Div("Model readout", className="aside-title"), html.Div(id="forecast-readout", className="narrative")], className="aside"),
                 ], className="spread spread-2-1"),
                 html.P("Forecasts extrapolate the recent global trend. They do not predict protocol feasibility, approvals, recruitment or causal effects. The Methods chapter sets out the model in full.", className="chapter-note"),
@@ -437,7 +451,7 @@ app.layout = html.Div(
                 ], className="spread spread-1-1"),
             ]),
             chapter("Resource plan", "planner", [
-                html.P("The equity view counts placements a country needs. A placement need not mean a new site: facilities that have already run studies of this disease can host more. The plan spends the budget where it buys the most alignment, using proven capacity first and opening new sites only where that is the better use of money. It is compared with opening one new site for every placement.", className="chapter-intro"),
+                html.P("The equity view counts placements a country needs. The planner uses named facilities' historical registry activity as a prioritisation signal, then compares reuse with opening new sites. Registry history is not measured spare capacity, recruitment performance or operational feasibility.", className="chapter-intro"),
                 planner_controls(),
                 html.Section([
                     ledger_item("Alignment for this budget", "plan-alignment", "plan-alignment-detail"),
@@ -447,7 +461,7 @@ app.layout = html.Div(
                 ], className="ledger ledger-4"),
                 html.Div([
                     figure_block(8, "What each dollar buys", "Alignment against cumulative spend. Blue: the resource-aware plan. Grey dashed: one new site per placement. The dotted rule marks the budget.", "plan-frontier"),
-                    figure_block(9, "Where the placements go", "Top recipients. Blue: studies added at facilities with proven spare capacity. Vermilion: studies at newly established sites.", "plan-countries"),
+                    figure_block(9, "Where the placements go", "Top recipients. Blue: studies assigned against historical activity headroom. Vermilion: studies assigned to assumed new sites.", "plan-countries"),
                 ], className="spread spread-1-1"),
                 html.Div([
                     figure_block(10, "Sites in the plan", "Blue circles: existing facilities taking extra studies, sized by studies added. Vermilion diamonds: new sites, placed at the country's most research-active city.", "plan-map"),
@@ -654,8 +668,9 @@ def render_dashboard(cause_code: str, years: list[int], extra_sites: int, strate
             html.P(f"placements projected for {int(future['year'].iloc[-1])}"),
             html.Dl([
                 html.Dt("Change from last complete year"), html.Dd(f"{change:+.1%}"),
-                html.Dt("80% interval"), html.Dd(f"{future['lower'].iloc[-1]:,.0f} to {future['upper'].iloc[-1]:,.0f}"),
-                html.Dt("Training years"), html.Dd(f"{len(actual)}, fixed seed"),
+                html.Dt("80% empirical interval"), html.Dd(f"{future['lower'].iloc[-1]:,.0f} to {future['upper'].iloc[-1]:,.0f}"),
+                html.Dt("Selected model"), html.Dd(forecast.attrs["model"]["selected_model"]),
+                html.Dt("Rolling WAPE"), html.Dd(f"{min(forecast.attrs['model']['loglinear_backtest_wape'], forecast.attrs['model']['naive_backtest_wape']):.1%}"),
             ]),
         ]
 
@@ -751,8 +766,8 @@ def render_dashboard(cause_code: str, years: list[int], extra_sites: int, strate
         f"{underserved_burden:.0%}", "in countries below 0.8× fair share",
         f"{theil:.2f}", "0 is proportional",
         map_fig, priority_fig, scatter, dist_fig, forecast_fig, readout,
-        f"{scenario_align:.1f}", f"Monte Carlo P10 to P90: {sim.alignment_p10:.1f} to {sim.alignment_p90:.1f}",
-        f"{scenario_theil:.3f}", f"Monte Carlo P10 to P90: {sim.theil_p10:.3f} to {sim.theil_p90:.3f}",
+        f"{scenario_align:.1f}", f"Assumption sensitivity P10 to P90: {sim.alignment_p10:.1f} to {sim.alignment_p90:.1f}",
+        f"{scenario_theil:.3f}", f"Assumption sensitivity P10 to P90: {sim.theil_p10:.3f} to {sim.theil_p90:.3f}",
         str(recipients), allocation_fig, compare_fig, quality, provenance,
         table.to_dict("records"), columns, badge, badge_class, f"Updated {gold_time:%d %b %Y, %H:%M} UTC",
         headline, dek,
@@ -798,7 +813,7 @@ def render_planner(cause_code, years, budget, study_cost, site_cost, reference, 
     # ---- frontier
     frontier = _base_figure()
     for curve, name, colour, dash in ((naive_curve, "One new site per placement", FAINT, "dash"),
-                                      (smart_curve, "Resource-aware plan", PRUSSIAN, "solid")):
+                                      (smart_curve, "Registry-proxy plan", PRUSSIAN, "solid")):
         x = np.concatenate([[0], curve["cumulative_cost"].to_numpy()])
         y = np.concatenate([[smart.alignment_before], curve["alignment"].to_numpy()])
         frontier.add_trace(go.Scatter(x=x, y=y, mode="lines", name=name, line=dict(color=colour, width=2, dash=dash),
@@ -820,9 +835,9 @@ def render_planner(cause_code, years, budget, study_cost, site_cost, reference, 
     hover = ("<b>%{customdata[0]}</b><br>%{x} placements %{meta}<br>Equity ratio %{customdata[1]:.2f} → %{customdata[2]:.2f}"
              "<br>New sites %{customdata[3]}<br>Cost %{customdata[4]:$,.0f}<extra></extra>")
     custom = top[["country_name", "equity_ratio_before", "equity_ratio_after", "new_sites", "cost"]].to_numpy()
-    bars.add_trace(go.Bar(y=top["country_name"], x=top["placements_existing"], orientation="h", name="At existing sites",
+    bars.add_trace(go.Bar(y=top["country_name"], x=top["placements_existing"], orientation="h", name="Against historical headroom",
                           marker=dict(color=PRUSSIAN, line=dict(color=PAPER, width=2)), customdata=custom,
-                          meta="at existing sites", hovertemplate=hover))
+                          meta="against historical headroom", hovertemplate=hover))
     bars.add_trace(go.Bar(y=top["country_name"], x=top["placements_new_sites"], orientation="h", name="At new sites",
                           marker=dict(color=VERMILION, line=dict(color=PAPER, width=2)), customdata=custom,
                           meta="at new sites", hovertemplate=hover,
@@ -846,11 +861,11 @@ def render_planner(cause_code, years, budget, study_cost, site_cost, reference, 
     site_map = go.Figure()
     if n_facilities:
         site_map.add_trace(go.Scattergeo(
-            lon=facilities_used["lon"], lat=facilities_used["lat"], mode="markers", name="Existing facility taking extra studies",
+            lon=facilities_used["lon"], lat=facilities_used["lat"], mode="markers", name="Facility with historical activity headroom",
             marker=dict(color=PRUSSIAN, size=np.clip(6 + 2.5 * facilities_used["assigned"], 8, 26), opacity=0.75, line=dict(color=PAPER, width=1)),
             customdata=facilities_used[["facility", "city", "assigned", "capacity", "used"]].to_numpy(),
             hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]}<br>+%{customdata[2]} studies"
-                          f"<br>Proven peak %{{customdata[3]}} in {span} years, %{{customdata[4]}} in {_years_label(start, end)}<extra></extra>"))
+                          f"<br>Historical peak %{{customdata[3]}} listings in {span} years, %{{customdata[4]}} in {_years_label(start, end)}<extra></extra>"))
     if len(opened):
         site_map.add_trace(go.Scattergeo(
             lon=opened["lon"], lat=opened["lat"], mode="markers", name="New sites (country total)",
@@ -862,7 +877,7 @@ def render_planner(cause_code, years, budget, study_cost, site_cost, reference, 
     site_map.update_layout(legend=dict(y=1.02))
 
     # ---- sensitivity to the new-site cost
-    rows = [html.Div([html.B("New-site cost"), html.B("Alignment"), html.B("New sites"), html.B("At existing sites")], className="sens-row sens-head")]
+    rows = [html.Div([html.B("New-site cost"), html.B("Alignment"), html.B("New sites"), html.B("Historical headroom")], className="sens-row sens-head")]
     for factor, result in sensitivity:
         rows.append(html.Div([
             html.Span(f"{factor:g}× ({_money(site_cost * factor)})"), html.Span(f"{result.alignment_after:.1f}"),
@@ -898,18 +913,20 @@ def render_planner(cause_code, years, budget, study_cost, site_cost, reference, 
     listings = listings[listings["cause_code"] == cause_code]
     named_share = 1 - listings["anonymised"].mean() if len(listings) else np.nan
     method = [html.B("Method and limits. "), html.Span(
-        f" Existing capacity: {int((capacity['headroom'] > 0).sum()):,} named facilities have proven spare capacity for this disease "
+        f" Historical activity proxy: {int((capacity['headroom'] > 0).sum()):,} named facilities are below their prior activity ceiling for this disease "
         f"(their peak studies in any {span}-year window up to {end}, minus studies already in {_years_label(start, end)}). "
-        f"{named_share:.0%} of this disease's site listings name a facility; anonymised sponsor listings cannot be tracked and are excluded, which understates existing capacity. "
-        f"New-site capacity is the {capacity_choice.lower()} of what comparable facilities have achieved. "
+        f"{named_share:.0%} of this disease's site listings name a facility; anonymised sponsor listings cannot be tracked and are excluded. "
+        f"The new-site throughput assumption is the {capacity_choice.lower()} of comparable facilities' historical listing activity. "
         f"Costs: your inputs × ICP 2021 health price level relative to the reference country. "
-        f"The optimiser maximises the alignment score per dollar; it stops at the budget ({smart.stopped_by.lower()}). "
-        "It does not model recruitment rates, regulatory timelines, competing trials or sponsor strategy.")]
+        f"The deterministic heuristic greedily selects the available action with the largest alignment gain per dollar; "
+        f"it stops at the budget ({smart.stopped_by.lower()}) and does not guarantee a global optimum. "
+        "It does not model recruitment rates, eligible participants, regulatory timelines, competing trials or sponsor strategy. "
+        "Use protocol-specific, finance-approved costs before operational decisions.")]
 
     return (
         f"{smart.alignment_after:.1f}", f"From {smart.alignment_before:.1f} now (+{gain:.1f}); one site per placement reaches {naive.alignment_after:.1f} (+{naive_gain:.1f})",
         f"{n_facilities + smart.new_sites:,}", f"{n_facilities:,} existing facilities + {smart.new_sites:,} new sites, versus {naive.new_sites:,} new sites if each placement opened one",
-        _money(smart.spent), f"{smart.placements:,} placements; {smart.from_existing:,} use existing capacity",
+        _money(smart.spent), f"{smart.placements:,} placements; {smart.from_existing:,} use historical activity headroom",
         saving_text, saving_detail,
         frontier, bars, site_map, rows, out.to_dict("records"), columns, excluded, method,
     )
@@ -980,16 +997,19 @@ $$T = \\sum_c p_c \\ln(p_c / b_c) = {theil:.4f}, \\qquad U = {_fmt_share(under, 
             fit_note = "The trend explains part of the year-to-year variation; read its direction as moderate evidence."
         else:
             fit_note = "The trend explains little of the year-to-year variation, so treat its direction as weak evidence."
-        fit_note += " The interval ignores uncertainty in the trend itself, so it understates the true uncertainty."
+        selected = model["selected_model"]
+        fit_note += (f" Rolling-origin validation selected the **{selected}**: log-linear WAPE "
+                     f"{model['loglinear_backtest_wape']:.1%}, last-value WAPE {model['naive_backtest_wape']:.1%}. "
+                     f"The interval uses {model['interval_method']}.")
         text.append(f"""
-**Forecast fit** (global activity, {model['first_year']} to {model['last_year']}, $n = {model['n_years']}$ complete years).
+**Forecast fit** (global interventional study-country activity, {model['first_year']} to {model['last_year']}, $n = {model['n_years']}$ complete years).
 
 $$\\ln(1 + Y_t) = {model['intercept']:.3f} {sign} {abs(slope):.4f}\\,(t - {model['first_year']}) + \\varepsilon_t$$
 
 The implied annual growth is $e^{{{slope:.4f}}} - 1 = {100 * (np.exp(slope) - 1):+.1f}\\%$,
 with residual standard deviation {model['residual_sd']:.3f} on the log scale and $R^2 = {model['r_squared']:.2f}$.
 {fit_note}
-From {model['draws']:,} bootstrap draws, {int(future['year'])} is forecast at {future['estimate']:,.0f}
+The governed {selected} forecast for {int(future['year'])} is {future['estimate']:,.0f}
 (80% interval {future['lower']:,.0f} to {future['upper']:,.0f}).
 """)
     else:
@@ -1001,9 +1021,9 @@ From {model['draws']:,} bootstrap draws, {int(future['year'])} is forecast at {f
     basis = hubs["capacity_basis"].str.split(" ").str[0].value_counts()
     uncosted = int(scale["cost_scale"].isna().sum())
     text.append(f"""
-**Planner inputs** (median new-site capacity, {PLANNER.get('reference_country', 'USA')} prices).
-{len(capacity):,} named facilities have run {cause_name} studies up to {end}; {with_room:,} are active with spare capacity,
-totalling {int(headroom.sum()):,} placements of spare capacity ($\\sum_f H_f$). New-site capacity is measured at country level for {int(basis.get('Country', 0))}
+**Planner inputs** (median assumed new-site throughput, {PLANNER.get('reference_country', 'USA')} prices).
+{len(capacity):,} named facilities have listed {cause_name} studies up to {end}; {with_room:,} are active below their historical activity ceiling,
+totalling {int(headroom.sum()):,} placements of activity headroom ($\\sum_f H_f$). The new-site proxy is measured at country level for {int(basis.get('Country', 0))}
 countries, income-group level for {int(basis.get('Income', 0))} and global level for {int(basis.get('All', 0))}.
 {uncosted} cohort countries lack an ICP price level and cannot receive placements.
 """)

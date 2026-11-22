@@ -30,9 +30,9 @@ The dashboard provides an executive overview, a country-level analytical table, 
 
 ### Clinical trial activity
 
-Trial records are retrieved from the [ClinicalTrials.gov API version 2](https://clinicaltrials.gov/data-api/api). The source is normally refreshed on weekdays. The application records both the upstream data timestamp and the time at which the local analytical snapshot was published.
+Trial records are retrieved from the [ClinicalTrials.gov API version 2](https://clinicaltrials.gov/data-api/api). Only records registered as **Interventional** are included; observational studies and expanded-access records are excluded. The source is normally refreshed on weekdays. The application records both the upstream data timestamp and the time at which the local analytical snapshot was published.
 
-The historical extraction uses a unique NCT study and country combination as its activity unit. A study listed in three countries contributes one activity unit to each country. Multiple facilities belonging to the same study within one country are counted once. For that reason, the measure should be interpreted as registered study-country activity, not as a literal count of individual research facilities.
+The historical extraction uses a unique NCT study and country combination as its activity unit. A study listed in three countries contributes one activity unit to each country. Multiple facilities belonging to the same study within one country are counted once. Countries recorded by ClinicalTrials.gov as removed from an earlier study version are retained for country-level history, but not for facility capacity. The measure is registered interventional study-country activity, not a literal count of facilities or participants.
 
 Conditions are assigned to diseases using a curated list of terms for each disease. Three rules keep the matching precise:
 
@@ -41,6 +41,21 @@ Conditions are assigned to diseases using a curated list of terms for each disea
 - Each disease can list phrases removed before matching, such as *respiratory depression* for depression or *pulmonary hypertension* for hypertensive heart disease.
 
 A study can count towards more than one disease when its registered conditions genuinely match more than one. The matching rules are tested against real condition labels in `tests/test_matching.py`.
+
+### Disease-matching validation
+
+Matcher unit tests protect known edge cases, but they do not measure performance. The repository therefore includes a separate blinded-review workflow. It draws both classifier-positive records and classifier-negative near-matches from the broad search frame in `config/disease_review_queries.yaml`, hides the classifier output from reviewers, and reports inverse-sampling-weighted precision and recall for each disease. The estimates apply to that published search frame; they are not claims about terminology that the frame itself could not retrieve.
+
+```powershell
+py -m py.disease_validation rules
+py -m py.disease_validation sample --per-stratum 20
+# Fill in review_label, reviewer, review_date and review_notes in
+# data/validation/disease_matching/review_sample.csv without opening the
+# separate review_predictions.csv file.
+py -m py.disease_validation score --min-reviewed-per-disease 10
+```
+
+Use `include`, `exclude` or `uncertain` as the review label. The generated [validation report](docs/disease-matching-validation.md) publishes per-disease precision and recall plus the complete inclusion terms, phrase exclusions and whole-study exclusions. Operational readiness stays provisional until the sample is complete and an independent clinical reviewer is approved in `config/sources.yaml`.
 
 ### Diseases covered
 
@@ -51,7 +66,7 @@ Thirty-three diseases are covered, in nine groups. They were chosen to include t
 | Infectious and parasitic | HIV/AIDS, tuberculosis, malaria, lower respiratory infections, diarrhoeal diseases, viral hepatitis, meningitis, measles, neglected tropical diseases |
 | Maternal and neonatal | Maternal conditions, neonatal conditions |
 | Cancers | Lung, breast, cervical, colorectal, liver, stomach and prostate cancer |
-| Cardiovascular and metabolic | Ischaemic heart disease, stroke, hypertensive heart disease, diabetes, chronic kidney disease |
+| Cardiovascular and metabolic | Ischaemic heart disease, stroke, hypertensive heart disease, diabetes, kidney diseases |
 | Respiratory | COPD, asthma |
 | Mental and neurological | Depressive disorders, anxiety disorders, Alzheimer's disease and dementias |
 | Digestive | Cirrhosis of the liver |
@@ -131,13 +146,13 @@ This accounts for the fact that adding activity changes both the country numerat
 
 ![Forecast chapter for stroke: observed global placements from 2018 to 2025 with a dashed three-year projection and its shaded 80% interval, beside a readout of 1,056 placements projected for 2028](docs/images/forecast.png)
 
-The forecast models annual global study-country activity for the selected disease. It fits a log-linear trend to the most recent complete years and uses residual bootstrap sampling to produce an 80 per cent uncertainty interval.
+The forecast models annual global interventional study-country activity. A log-linear trend is compared with a last-value benchmark using rolling-origin backtests and is selected only when it performs better. Its 80 per cent empirical prediction interval comes from historical out-of-sample forecast errors where enough are available.
 
 The model is deliberately transparent. It is suitable for directional portfolio discussion, but it does not account for protocol pipelines, regulatory approvals, sponsor strategy, competitive trials, recruitment capacity or unexpected changes in registration practice. It should not be described as a forecast of enrolment or study success.
 
 ## Scenario planning
 
-![Scenarios chapter for stroke: 250 placements added under the equity gap rule, the projected alignment and Theil divergence with Monte Carlo ranges, where the placements go, and each country's equity ratio before and after](docs/images/scenarios.png)
+![Scenarios chapter for stroke: 250 placements added under the equity gap rule, the projected alignment and Theil divergence with assumption-sensitivity ranges, where the placements go, and each country's equity ratio before and after](docs/images/scenarios.png)
 
 The scenario laboratory allocates a user-defined number of additional sites using one of three rules:
 
@@ -145,13 +160,15 @@ The scenario laboratory allocates a user-defined number of additional sites usin
 - **Disease burden:** allocates in proportion to the burden reference.
 - **Hybrid:** combines equity gap and disease burden, with greater weight placed on the equity gap.
 
-Allocations are whole numbers. The dashboard recalculates country shares, Equity Ratios, the alignment score and Theil divergence after allocation. Monte Carlo simulation introduces variation in both burden and site placement, producing a range rather than a single deterministic claim.
+Allocations are whole numbers. The dashboard recalculates country shares, Equity Ratios, the alignment score and Theil divergence after allocation. Simulation varies burden and placement under stated assumptions. Its ranges are sensitivity analyses, not confidence or prediction intervals.
 
 These scenarios are planning aids. A real site strategy would also need evidence on eligible population, standard of care, competing trials, investigator capability, laboratory and pharmacy infrastructure, regulatory timelines, contracting, cost, travel burden and community acceptability.
 
 ## Resource planner
 
-The equity measures say how many additional study placements a country needs. A placement does not have to mean a new site. A facility that has already run studies of the disease can host more, and a new site, once established, can host several studies. The resource planner turns a budget into a plan that uses proven capacity first and opens new sites only where that buys more alignment per dollar.
+The equity measures say how many additional study placements a country needs. The resource planner uses a named facility's historical ClinicalTrials.gov activity as a prioritisation signal, then compares reuse with opening a new site. Registry history does not establish activation, recruitment performance or unused operational capacity.
+
+This is a deterministic candidate-prioritisation heuristic, not a recruitment or operational-feasibility model, and it does not guarantee the globally optimal portfolio. Replace the monetary defaults with protocol-specific, finance-approved estimates before using its budget outputs in a decision.
 
 ![Resource plan chapter for stroke: the planner's cost inputs, then the results for a US$5 million budget, with alignment rising from 37.6 to 49.6 using 625 existing facilities and no new sites, a saving of US$3.20 million against opening one site per placement, the spend frontier and where the placements go](docs/images/resource-plan-results.png)
 
@@ -159,8 +176,8 @@ The equity measures say how many additional study placements a country needs. A 
 
 | Input | Source | Definition |
 | --- | --- | --- |
-| Existing spare capacity | ClinicalTrials.gov facility listings | For each named facility, the most studies of the disease it started in any window as long as the selected range (ending no later than the range), minus the studies it already has in the selected range. Only facilities active in the selected range or the equal-length window before it count. |
-| New-site capacity | ClinicalTrials.gov facility listings | The median, 75th or 90th percentile (an observed value) of demonstrated capacity among facilities in the same country. Where fewer than five named facilities exist, the World Bank income group is used, then all countries. |
+| Historical activity headroom proxy | ClinicalTrials.gov facility listings | For each named facility, the most studies of the disease it listed in any window as long as the selected range (ending no later than the range), minus listings in the selected range. Only facilities active in the selected range or the equal-length window before it count. This is not measured spare capacity. |
+| New-site throughput assumption | ClinicalTrials.gov facility listings | The median, 75th or 90th percentile (an observed value) of historical listing activity among facilities in the same country. Where fewer than five named facilities exist, the World Bank income group is used, then all countries. This assumption requires feasibility validation. |
 | Country cost level | World Bank ICP 2021, "Actual health" price level index (World = 100) | Costs are scaled by the country's index relative to the reference country. The ICP GDP price level is a labelled fallback. Countries with neither are not allocated and are listed. |
 | Infrastructure context | World Development Indicators | Physicians and hospital beds per 1,000, electricity access, health spending per capita, the logistics performance index and researchers per million, shown for each country in the plan. |
 | Candidate cities | ClinicalTrials.gov facility listings | For countries that need a new site, the cities with the most named facilities active in any tracked disease recently. A country with none is marked as having no recorded research facility. |
@@ -175,8 +192,8 @@ The equity measures say how many additional study placements a country needs. A 
 
 At each step the planner compares, across eligible countries, two actions:
 
-1. Add one study at a facility with spare capacity, at the study start-up cost.
-2. Establish a new site, at the new-site cost plus study start-up costs, and fill it up to its measured capacity or the country's parity need.
+1. Add one study against a facility's historical activity headroom proxy, at the study start-up cost.
+2. Establish a new site, at the new-site cost plus study start-up costs, and fill it up to its assumed throughput or the country's parity need.
 
 It takes the action with the largest gain in alignment score per dollar, and stops when the budget runs out or no action improves alignment. When the portfolio is so small that any single placement overshoots a country's burden share, the planner looks ahead. It tries rounds of 2, 4, 8 and more placements, shared out by each country's gap to its burden-proportional target. The baseline for comparison opens one new site for every placement.
 
@@ -184,8 +201,8 @@ The dashboard reports the alignment reached, the existing facilities and new sit
 
 ### Limits
 
-- Facility names are free text. Name variants of one hospital are counted as separate facilities, and anonymised listings are excluded. Both understate existing capacity, so the plan errs towards opening new sites.
-- Capacity is the number of studies a facility started within a window as long as the selected range, not participants enrolled. Very short ranges (one or two years) give small, noisy capacity figures.
+- Facility names are free text. Name variants of one hospital are counted as separate facilities, and anonymised listings are excluded. A registry location also does not prove activation, enrolment or spare capacity; the facility layer is only a historical-activity signal.
+- Historical activity headroom is derived from registry listings within a window as long as the selected range, not activation or participants enrolled. Very short ranges (one or two years) give especially small, noisy proxies.
 - The planner does not model recruitment rates, regulatory timelines, competing trials or sponsor strategy, and cost scaling uses a whole-sector health price level, not quotes for a specific protocol.
 
 ## Live data behaviour
@@ -255,6 +272,8 @@ A full ClinicalTrials.gov rebuild can take some time because records returned by
 | `py/indices.py` | Country-level equity calculations |
 | `py/analytics.py` | Forecasting and allocation simulation |
 | `py/live.py` | Atomic selected-disease refresh and provenance metadata |
+| `py/validation.py` | Fail-closed analytical contracts and operational-readiness warnings |
+| `py/disease_validation.py` | Blinded disease-matcher sampling, scoring and reporting |
 | `tests/` | Analytical unit tests |
 | `data/clean/` | Harmonised source snapshots |
 | `data/gold/` | Dashboard-ready analytical snapshots |
@@ -270,10 +289,11 @@ Run the automated checks before publishing a new version:
 py -m pytest -q
 py -m ruff check app.py py tests
 py -m compileall -q app.py py
+py -m py.validation
 ```
 
-The tests cover the parity calculation, integer allocation, alignment score, forecast intervals, current-year interval handling, disease acronym matching and exclusion of WHO regional aggregates. Planner tests cover facility capacity (excluding anonymised listings and later activity), the fallback for new-site capacity, cost scaling without imputation, reuse of capacity against the baseline, exclusion of uncosted countries, the lookahead for small portfolios, and how placements are assigned to facilities.
+The tests cover the parity calculation, integer allocation, alignment score, forecast intervals, current-year interval handling, disease matching and exclusion of WHO regional aggregates. Planner tests cover the historical-activity proxy (excluding anonymised listings and later activity), the fallback for assumed new-site throughput, cost scaling without imputation, reuse against the baseline, exclusion of uncosted countries, the lookahead for small portfolios, and how placements are assigned to facilities. The validation command checks rebuilt snapshots and reports analytical and operational readiness separately. Operational readiness remains false until protocol costs are approved, an independent blinded clinical review validates the disease classifier, and candidate-site feasibility is verified outside the registry.
 
 ## Appropriate use
 
-This application is a research planning and policy analysis tool. It should be used to identify questions, test allocation assumptions and expose geographic imbalances that warrant further investigation. It is not a clinical decision tool, a causal model, a substitute for country feasibility assessment or a basis for automated funding decisions.
+This application is a research planning and policy analysis tool. It can prioritise countries and candidate facilities for the next feasibility stage. It is not a clinical decision tool, a causal model, a substitute for country feasibility assessment, a recruitment forecast or a basis for automated funding decisions.
